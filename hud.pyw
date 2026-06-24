@@ -1,6 +1,7 @@
 """System Monitor HUD: a borderless, semi-transparent, always-on-top overlay
-showing live CPU%, RAM%, a clock, and scrolling sparklines. Draggable; right-click
-for opacity presets and close. Updates at 1 Hz. Pure Python 3.12 stdlib."""
+showing live CPU%, RAM%, a clock, and scrolling sparklines. Draggable (unless
+locked); right-click for opacity presets, lock, and close. Updates at 1 Hz.
+Pure Python 3.12 stdlib."""
 import os, sys, traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import winkit.startup as startup
@@ -56,12 +57,28 @@ class Hud:
         self.ram = 0.0
         self._drag_dx = 0
         self._drag_dy = 0
+        self._moved = False
+        self.lock_var = tk.BooleanVar(value=bool(cfg["hud"]["locked"]))
 
         self.canvas = tk.Canvas(
             root, width=WIDTH, height=HEIGHT, bg=BG,
             highlightthickness=0, bd=0,
         )
         self.canvas.pack(fill="both", expand=True)
+
+        # Persistent canvas items: created once, updated in place each tick
+        # (no per-frame create/destroy churn -- matches the lightweight pattern).
+        c = self.canvas
+        y1 = PAD + ROW_H // 2
+        y2 = PAD + ROW_H + ROW_H // 2
+        y3 = PAD + 2 * ROW_H + ROW_H // 2
+        self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
+        self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
+        self._clock_text = c.create_text(WIDTH // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
+        self._cpu_line = c.create_line(0, 0, 0, 0, fill=CPU_COLOR, width=1, state="hidden")
+        self._ram_line = c.create_line(0, 0, 0, 0, fill=RAM_COLOR, width=1, state="hidden")
+        self._cpu_band = (PAD + 1, PAD + ROW_H - 1)
+        self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         for w in (root, self.canvas):
@@ -77,6 +94,8 @@ class Hud:
                 command=lambda p=preset: self._set_alpha(p),
             )
         self.menu.add_separator()
+        self.menu.add_checkbutton(label="Lock position", variable=self.lock_var,
+                                  command=self._toggle_lock)
         self.menu.add_command(label="Close", command=root.destroy)
 
         self._draw()       # paint something immediately (before first tick)
@@ -84,16 +103,22 @@ class Hud:
 
     # --- dragging ---------------------------------------------------------
     def _on_press(self, event):
-        # Offset of the cursor within the window, in screen coords.
+        self._moved = False
         self._drag_dx = event.x_root - self.root.winfo_x()
         self._drag_dy = event.y_root - self.root.winfo_y()
 
     def _on_drag(self, event):
+        if self.lock_var.get():
+            return  # position is locked
+        self._moved = True
         x = event.x_root - self._drag_dx
         y = event.y_root - self._drag_dy
         self.root.geometry(f"+{x}+{y}")
 
     def _on_release(self, event):
+        if not self._moved:
+            return  # a plain click (no drag) must not rewrite config.json
+        self._moved = False
         self.cfg["hud"]["x"] = self.root.winfo_x()
         self.cfg["hud"]["y"] = self.root.winfo_y()
         self._save()
@@ -108,6 +133,10 @@ class Hud:
     def _set_alpha(self, alpha):
         self.root.attributes("-alpha", alpha)
         self.cfg["hud"]["alpha"] = alpha
+        self._save()
+
+    def _toggle_lock(self):
+        self.cfg["hud"]["locked"] = bool(self.lock_var.get())
         self._save()
 
     def _save(self):
@@ -127,43 +156,29 @@ class Hud:
 
     def _draw(self):
         c = self.canvas
-        c.delete("all")
-        clock = time.strftime("%H:%M:%S")
+        c.itemconfig(self._cpu_text, text=f"CPU {self.cpu:3.0f}%")
+        c.itemconfig(self._ram_text, text=f"RAM {self.ram:3.0f}%")
+        c.itemconfig(self._clock_text, text=time.strftime("%H:%M:%S"))
+        self._update_spark(self._cpu_line, self.cpu_hist, self._cpu_band)
+        self._update_spark(self._ram_line, self.ram_hist, self._ram_band)
 
-        # Row 1: CPU
-        y1 = PAD + ROW_H // 2
-        c.create_text(LABEL_X, y1, anchor="w",
-                      text=f"CPU {self.cpu:3.0f}%", fill=FG, font=FONT)
-        self._sparkline(self.cpu_hist, PAD + 1, PAD + ROW_H - 1, CPU_COLOR)
-
-        # Row 2: RAM
-        y2 = PAD + ROW_H + ROW_H // 2
-        c.create_text(LABEL_X, y2, anchor="w",
-                      text=f"RAM {self.ram:3.0f}%", fill=FG, font=FONT)
-        self._sparkline(self.ram_hist, PAD + ROW_H + 1, PAD + 2 * ROW_H - 1, RAM_COLOR)
-
-        # Row 3: clock, centered across the full width.
-        y3 = PAD + 2 * ROW_H + ROW_H // 2
-        c.create_text(WIDTH // 2, y3, anchor="center",
-                      text=clock, fill=DIM, font=CLOCK_FONT)
-
-    def _sparkline(self, hist, top, bottom, color):
-        """Draw a scrolling polyline of the last HISTORY samples (each 0..100)
-        spread across a fixed-width band on the right of the row."""
+    def _update_spark(self, line_id, hist, band):
+        """Update a scrolling polyline of the last HISTORY samples (each 0..100),
+        right-aligned in a fixed-width band. Reuses the existing line item."""
         n = len(hist)
         if n < 2:
+            self.canvas.itemconfig(line_id, state="hidden")
             return
+        top, bottom = band
         height = bottom - top
         step = SPARK_W / (HISTORY - 1)
-        # Right-align so the newest sample sits at the right edge.
-        x0 = SPARK_RIGHT - (n - 1) * step
+        x0 = SPARK_RIGHT - (n - 1) * step  # newest sample sits at the right edge
         pts = []
         for i, v in enumerate(hist):
             frac = max(0.0, min(1.0, v / 100.0))
-            x = x0 + i * step
-            y = bottom - frac * height
-            pts.extend((x, y))
-        self.canvas.create_line(*pts, fill=color, width=1, smooth=False)
+            pts.extend((x0 + i * step, bottom - frac * height))
+        self.canvas.coords(line_id, *pts)
+        self.canvas.itemconfig(line_id, state="normal")
 
 
 def main():
@@ -180,7 +195,15 @@ def main():
         root.attributes("-alpha", float(hud_cfg["alpha"]))
     except (tk.TclError, TypeError, ValueError):
         root.attributes("-alpha", 0.85)
-    root.geometry(f"{WIDTH}x{HEIGHT}+{int(hud_cfg['x'])}+{int(hud_cfg['y'])}")
+
+    # Clamp the restored position into the visible primary work area so a stale
+    # off-screen coordinate (e.g. a now-disconnected monitor) can't orphan this
+    # borderless, title-bar-less window where it can't be dragged back.
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    x = max(0, min(int(hud_cfg["x"]), sw - WIDTH))
+    y = max(0, min(int(hud_cfg["y"]), sh - HEIGHT))
+    root.geometry(f"{WIDTH}x{HEIGHT}+{x}+{y}")
     root.configure(bg=BG)
 
     root.update()  # realize the HWND before touching ex-styles

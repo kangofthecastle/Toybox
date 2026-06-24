@@ -63,6 +63,71 @@ class TestConfig(unittest.TestCase):
         config.save(nested, config.defaults())
         self.assertTrue(os.path.exists(nested))
 
+    # --- leaf type coercion (a wrong-typed but JSON-valid value must not reach a toy) ---
+
+    def _write(self, obj):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def test_wrong_typed_int_falls_back_to_default(self):
+        self._write({"hud": {"x": "left"}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["hud"]["x"], config.DEFAULTS["hud"]["x"])
+
+    def test_wrong_typed_max_items_falls_back_to_int(self):
+        self._write({"clipboard": {"max_items": "twenty"}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["clipboard"]["max_items"], 20)
+        self.assertIsInstance(cfg["clipboard"]["max_items"], int)
+
+    def test_alpha_accepts_int_coerced_to_float(self):
+        self._write({"hud": {"alpha": 1}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["hud"]["alpha"], 1.0)
+        self.assertIsInstance(cfg["hud"]["alpha"], float)
+
+    def test_bool_field_rejects_non_bool(self):
+        self._write({"hud": {"locked": "yes"}})
+        cfg = config.load(self.path)
+        self.assertIs(cfg["hud"]["locked"], False)
+
+    def test_bool_not_accepted_as_int(self):
+        self._write({"clipboard": {"max_items": True}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["clipboard"]["max_items"], 20)
+
+    def test_nullable_xy_accepts_none_and_number(self):
+        self._write({"pet": {"x": 300, "y": None}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["pet"]["x"], 300)
+        self.assertIsNone(cfg["pet"]["y"])
+
+    def test_nullable_x_rejects_string(self):
+        self._write({"pet": {"x": "left"}})
+        cfg = config.load(self.path)
+        self.assertIsNone(cfg["pet"]["x"])
+
+    def test_hotkey_wrong_type_falls_back_to_list(self):
+        self._write({"clipboard": {"hotkey": "ctrl+v"}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["clipboard"]["hotkey"], config.DEFAULTS["clipboard"]["hotkey"])
+
+    def test_section_replaced_by_scalar_falls_back_to_defaults(self):
+        self._write({"hud": "not a dict"})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["hud"], config.DEFAULTS["hud"])
+
+    def test_valid_values_preserved_through_coercion(self):
+        cfg_in = config.defaults()
+        cfg_in["hud"]["x"] = 100
+        cfg_in["hud"]["locked"] = True
+        cfg_in["pet"]["x"] = 5
+        config.save(self.path, cfg_in)
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["hud"]["x"], 100)
+        self.assertIs(cfg["hud"]["locked"], True)
+        self.assertEqual(cfg["pet"]["x"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

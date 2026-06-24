@@ -13,6 +13,10 @@ _HRESULT = C.c_long
 _COINIT_APARTMENTTHREADED = 0x2
 _CLSCTX_ALL = 0x17
 _eRender, _eConsole = 0, 0
+_RPC_E_CHANGED_MODE = 0x80010106
+
+_ole32.CoInitializeEx.restype = C.c_long
+_ole32.CoInitializeEx.argtypes = [C.c_void_p, wintypes.DWORD]
 
 
 class _GUID(C.Structure):
@@ -68,7 +72,11 @@ def _build_meter():
 
 class AudioPeakMeter:
     def __init__(self, rebuild_every=64):
-        _ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)  # STA, this thread, once
+        # Only balance with CoUninitialize if WE initialized COM. S_OK (0) and
+        # S_FALSE (1) mean we did; RPC_E_CHANGED_MODE means someone else already
+        # owns the apartment (we must NOT uninitialize their count).
+        hr = _ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED) & 0xFFFFFFFF
+        self._co_owned = hr in (0, 1)
         self.dev = None
         self.meter = None
         self._rebuild_every = rebuild_every
@@ -101,7 +109,9 @@ class AudioPeakMeter:
         _release(self.meter)
         _release(self.dev)
         self.meter = self.dev = None
-        try:
-            _ole32.CoUninitialize()
-        except Exception:
-            pass
+        if self._co_owned:
+            try:
+                _ole32.CoUninitialize()
+            except Exception:
+                pass
+            self._co_owned = False

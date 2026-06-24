@@ -69,10 +69,16 @@ class ClipboardApp:
         # Seed with the current sequence so the first real copy registers as a change.
         self._last_seq = wkinput.clipboard_sequence()
         self._poll_clipboard()
-        # Global hotkey -> open picker.
-        self.hotkey = wkinput.HotkeyPoller(
-            root, cfg["clipboard"]["hotkey"], self.show_picker, 66
-        )
+        # Global hotkey -> open picker. Fall back to the default chord if the
+        # configured hotkey contains an unknown key token.
+        try:
+            self.hotkey = wkinput.HotkeyPoller(
+                root, cfg["clipboard"]["hotkey"], self.show_picker, 66
+            )
+        except (ValueError, TypeError):
+            self.hotkey = wkinput.HotkeyPoller(
+                root, config.DEFAULTS["clipboard"]["hotkey"], self.show_picker, 66
+            )
 
     # -- clipboard capture loop -------------------------------------------
     def _poll_clipboard(self):

@@ -80,6 +80,16 @@ class TestAudioMeter(unittest.TestCase):
         finally:
             m.close()
 
+    def test_repeated_construct_close_no_crash(self):
+        import winkit.audio as A
+        for _ in range(5):
+            m = A.AudioPeakMeter()
+            try:
+                v = m.read()
+                self.assertGreaterEqual(v, 0.0)
+            finally:
+                m.close()
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestStartupRegistry(unittest.TestCase):
