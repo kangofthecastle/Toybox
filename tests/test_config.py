@@ -156,6 +156,14 @@ class TestConfig(unittest.TestCase):
         self.assertIsInstance(pet["nudge_min"], int)
         self.assertNotIsInstance(pet["nudge_min"], bool)
 
+    def test_phase4_pin_carry_defaults_present(self):
+        pet = config.defaults()["pet"]
+        for key in ("pin", "carry"):
+            self.assertIn(key, pet)
+            self.assertIsInstance(pet[key], bool)
+        self.assertIn("pin_hotkey", pet)
+        self.assertIsInstance(pet["pin_hotkey"], list)
+
 
 if __name__ == "__main__":
     unittest.main()
