@@ -149,16 +149,11 @@ class Cat:
         self.hwnd = window._hwnd_of(root)
         self.pinset = pins.PinSet(window.set_topmost)
         self._held = []                   # files the cat is currently carrying
-        if pet.get("pin", True):
-            self.pin_hotkey = wkinput.HotkeyPoller(
-                root, pet.get("pin_hotkey") or ["ctrl", "shift", "P"],
-                self._toggle_pin)
-        else:
-            self.pin_hotkey = None
-        if pet.get("carry", True):
-            self.drop_target = dnd.FileDropTarget(self.hwnd, self._on_files_dropped)
-        else:
-            self.drop_target = None
+        self.pin_hotkey = None
+        self.drop_target = None
+        self._tick_after = None
+        self._apply_pin_enabled()         # install the hotkey poller iff enabled
+        self._apply_carry_enabled()       # install the drop target iff enabled
 
         self._drag_dx = self._drag_dy = 0
         self._moved = False
@@ -212,6 +207,29 @@ class Cat:
             self._purred = False
 
     # --- Pin + Catch & Carry (Phase 4) ----------------------------------
+    def _apply_pin_enabled(self):
+        """Install/tear down the pin hotkey poller to match the config flag, so
+        toggling the menu item takes effect immediately (not on next restart)."""
+        on = self.cfg["pet"].get("pin", True)
+        if on and self.pin_hotkey is None:
+            self.pin_hotkey = wkinput.HotkeyPoller(
+                self.root, self.cfg["pet"].get("pin_hotkey") or ["ctrl", "shift", "P"],
+                self._toggle_pin)
+        elif not on and self.pin_hotkey is not None:
+            self.pin_hotkey.stop()
+            self.pin_hotkey = None
+            self.pinset.unpin_all()       # release whatever the cat was holding up
+
+    def _apply_carry_enabled(self):
+        """Install/tear down the WM_DROPFILES target to match the config flag."""
+        on = self.cfg["pet"].get("carry", True)
+        if on and self.drop_target is None:
+            self.drop_target = dnd.FileDropTarget(self.hwnd, self._on_files_dropped)
+        elif not on and self.drop_target is not None:
+            self.drop_target.close()
+            self.drop_target = None
+            self._held = []               # stop offering to drop stale files
+
     def _toggle_pin(self):
         if not self.cfg["pet"].get("pin", True):
             return
@@ -259,6 +277,10 @@ class Cat:
         if key == "clip_actions" and self.cfg["pet"][key]:
             # Re-baseline so re-enabling doesn't re-bubble the current clipboard.
             self._clip_seq = wkinput.clipboard_sequence()
+        if key == "pin":
+            self._apply_pin_enabled()     # install/tear down the hotkey poller now
+        if key == "carry":
+            self._apply_carry_enabled()   # install/tear down the drop target now
         try:
             config.save(CFG_PATH, self.cfg)
         except Exception:
@@ -628,9 +650,16 @@ class Cat:
                       or now < self.blink_until
                       or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
             fps = self.active_fps if active else self.idle_fps
-        self.root.after(max(1, int(round(1000.0 / fps))), self.tick)
+        self._tick_after = self.root.after(max(1, int(round(1000.0 / fps))), self.tick)
 
     def close(self):
+        # Cancel the pending tick so no orphaned after-callback fires post-destroy.
+        if self._tick_after is not None:
+            try:
+                self.root.after_cancel(self._tick_after)
+            except Exception:
+                pass
+            self._tick_after = None
         try:
             self.meter.close()
         except Exception:

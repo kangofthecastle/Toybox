@@ -4,7 +4,6 @@ on the clipboard, plus a WM_DROPFILES wndproc subclass (FileDropTarget, Task 4).
 The byte-layout builder is pure and unit-tested; the Win32 calls follow the
 64-bit-safe idiom in winkit/tray.py."""
 import ctypes
-import os
 import struct
 from ctypes import wintypes
 
@@ -28,7 +27,12 @@ _kernel32.GlobalLock.restype = ctypes.c_void_p
 _kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
 _kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
 _kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+_user32.OpenClipboard.restype = wintypes.BOOL
 _user32.OpenClipboard.argtypes = [wintypes.HWND]
+_user32.EmptyClipboard.restype = wintypes.BOOL
+_user32.EmptyClipboard.argtypes = []
+_user32.CloseClipboard.restype = wintypes.BOOL
+_user32.CloseClipboard.argtypes = []
 _user32.SetClipboardData.restype = wintypes.HANDLE
 _user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
 

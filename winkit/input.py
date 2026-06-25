@@ -96,15 +96,23 @@ class HotkeyPoller:
         self.interval = interval_ms
         self._was_down = False
         self._stopped = False
+        self._after_id = None
         self._poll()
 
     def stop(self):
         self._stopped = True
+        if self._after_id is not None:
+            try:
+                self.root.after_cancel(self._after_id)  # no orphaned post-destroy poll
+            except Exception:
+                pass
+            self._after_id = None
 
     def _combo_down(self):
         return all(key_down(vk) for vk in self.vks)
 
     def _poll(self):
+        self._after_id = None
         if self._stopped:
             return
         try:
@@ -119,4 +127,4 @@ class HotkeyPoller:
                 self._was_down = False
         finally:
             if not self._stopped:
-                self.root.after(self.interval, self._poll)
+                self._after_id = self.root.after(self.interval, self._poll)
