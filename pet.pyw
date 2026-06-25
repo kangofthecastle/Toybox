@@ -14,6 +14,7 @@ import winkit.startup as startup
 startup.guard_streams()  # MUST be the first executable statement
 
 import math
+import random
 import time
 import tkinter as tk
 
@@ -38,6 +39,13 @@ IDLE_AFTER_S = 2.0
 CURSOR_ACTIVE_S = 1.0
 KEY_RGB = (1, 1, 1)            # window.KEY_COLOR "#010101"
 IDLE_FRAME_S = 0.09           # idle animation cadence
+
+FUR_COLOR = "#fdd5b5"          # (253,213,181) -- baked sprite fur around the eyes
+EYE_REACH = 60.0              # cursor distance (screen px) for full dot deflection
+EYE_MAX_OFF = 2.0            # max dot deflection within the 8x8 eye base (screen px)
+BLINK_MIN_S = 2.5             # random blink interval bounds
+BLINK_MAX_S = 5.5
+BLINK_DUR_S = 0.12            # how long an eye stays shut
 
 
 def _smoke_ms():
@@ -78,15 +86,20 @@ class Cat:
         self._last_cursor = self._cursor
         self._last_cursor_move = -1e9
 
-        # z-order: glow (back) -> cat -> pupils (front)
+        # z-order: glow (back) -> cat -> eyes (front)
         self.glow_item = canvas.create_image(0, 0, anchor="center",
                                               image=self.glow.get(self.hue, 0.0))
         self.cat_item = canvas.create_image(0, 0, anchor="s",
                                             image=self.sheet.frame(0, self.zoom))
-        pr = max(2, int(round(1.3 * self.zoom)))
-        self.pr = pr
-        self.pup_l = canvas.create_oval(0, 0, 0, 0, fill="#241a1a", outline="")
-        self.pup_r = canvas.create_oval(0, 0, 0, 0, fill="#241a1a", outline="")
+
+        # Pixel eyes: per eye we pre-create a black 2x2 base + a white dot (open
+        # state) and a fur-colored 2x2 cell + black dash (closed/blink state).
+        # Per frame we only move/recolor and toggle visibility -- never recreate.
+        self.eyes = [self._make_eye(), self._make_eye()]
+
+        # Blink: brief shut-eye on a random interval (timed off draw()'s clock).
+        self.blink_until = 0.0
+        self.next_blink = self.t0 + random.uniform(BLINK_MIN_S, BLINK_MAX_S)
 
         self._drag_dx = self._drag_dy = 0
         self._moved = False
@@ -151,22 +164,82 @@ class Cat:
         self.canvas.coords(self.cat_item, cx, feet_y)
         self.canvas.coords(self.glow_item, cx, feet_y - self.sprite_px / 2.0)
         self.canvas.itemconfig(self.glow_item, image=self.glow.get(self.hue, min(1.0, env * 1.6)))
-        self._draw_pupils(cx, feet_y)
 
-    def _draw_pupils(self, cx, feet_y):
+        # Schedule blinks: when due, shut the eyes for BLINK_DUR_S and pick the
+        # next interval.
+        if now >= self.next_blink:
+            self.blink_until = now + BLINK_DUR_S
+            self.next_blink = now + random.uniform(BLINK_MIN_S, BLINK_MAX_S)
+        self._draw_eyes(cx, feet_y, now)
+
+    def _make_eye(self):
+        """Pre-create the canvas items for one eye (open: black base + white dot;
+        closed: fur cell + black dash). Hidden until placed each frame."""
+        c = self.canvas
+        return {
+            "base": c.create_rectangle(0, 0, 0, 0, fill="#000000", outline=""),
+            "dot":  c.create_rectangle(0, 0, 0, 0, fill="#ffffff", outline=""),
+            "lid":  c.create_rectangle(0, 0, 0, 0, fill=FUR_COLOR, outline=""),
+            "dash": c.create_rectangle(0, 0, 0, 0, fill="#000000", outline=""),
+        }
+
+    def _hide_eye(self, e):
+        for item in e.values():
+            self.canvas.itemconfig(item, state="hidden")
+
+    def _draw_eyes(self, cx, feet_y, now):
         z = self.zoom
         left_px = cx - self.sprite_px / 2.0          # sprite left edge (window space)
         top_px = feet_y - self.sprite_px             # sprite top edge
         rootx, rooty = self.root.winfo_rootx(), self.root.winfo_rooty()
         gx, gy = self._cursor
-        anchors = eyes.EYES["idle"][self.frame_i % len(eyes.EYES["idle"])]
-        for item, (ax, ay) in zip((self.pup_l, self.pup_r), anchors):
-            ex = left_px + ax * z
-            ey = top_px + ay * z
-            ox, oy = eyes.pupil_offset(gx - (rootx + ex), gy - (rooty + ey))
-            px = ex + ox * z
-            py = ey + oy * z
-            self.canvas.coords(item, px - self.pr, py - self.pr, px + self.pr, py + self.pr)
+
+        table = eyes.EYES["idle"]
+        anchors = table[self.frame_i % len(table)]
+        if anchors is None:                          # closed-eye frame: no eyes
+            for e in self.eyes:
+                self._hide_eye(e)
+            return
+
+        blinking = now < self.blink_until
+        for e, (ax, ay) in zip(self.eyes, anchors):
+            bx = left_px + ax * z                    # 2x2 base top-left (window space)
+            by = top_px + ay * z
+            base = 2 * z                             # 8x8 px black base over the eye
+            if blinking:
+                # Closed eye: fur-fill the 2x2, draw a 2px-wide x 1px-tall dash
+                # across its vertical middle; hide the open-eye items.
+                self.canvas.coords(e["lid"], bx, by, bx + base, by + base)
+                dash_x0 = bx
+                dash_x1 = bx + 2 * z                  # 2 sprite px wide
+                dash_y0 = by + z / 2.0                # 1 sprite px tall, centered on
+                dash_y1 = by + z * 1.5               # the 2px cell's vertical middle
+                self.canvas.coords(e["dash"], dash_x0, dash_y0, dash_x1, dash_y1)
+                self.canvas.itemconfig(e["lid"], state="normal")
+                self.canvas.itemconfig(e["dash"], state="normal")
+                self.canvas.itemconfig(e["base"], state="hidden")
+                self.canvas.itemconfig(e["dot"], state="hidden")
+                continue
+
+            # Open eye: black 2x2 base, white 1px dot floated toward the cursor.
+            self.canvas.coords(e["base"], bx, by, bx + base, by + base)
+            ecx = bx + base / 2.0                     # base center (window space)
+            ecy = by + base / 2.0
+            ox, oy = eyes.pupil_offset(gx - (rootx + ecx), gy - (rooty + ecy),
+                                       reach=EYE_REACH, max_off=EYE_MAX_OFF)
+            # Float the dot CENTER toward the cursor (base_center + off), so its
+            # top-left is offset back by half the dot. Snap to int px and clamp so
+            # the 4x4 dot stays fully inside the 8x8 base.
+            bxi, byi = int(round(bx)), int(round(by))
+            dx = int(round(ecx + ox - z / 2.0))
+            dy = int(round(ecy + oy - z / 2.0))
+            dx = min(max(dx, bxi), bxi + base - z)
+            dy = min(max(dy, byi), byi + base - z)
+            self.canvas.coords(e["dot"], dx, dy, dx + z, dy + z)
+            self.canvas.itemconfig(e["base"], state="normal")
+            self.canvas.itemconfig(e["dot"], state="normal")
+            self.canvas.itemconfig(e["lid"], state="hidden")
+            self.canvas.itemconfig(e["dash"], state="hidden")
 
     def tick(self):
         now = time.monotonic()
@@ -191,6 +264,7 @@ class Cat:
 
         active = ((now - self.last_loud) < IDLE_AFTER_S
                   or self.hop_t is not None
+                  or now < self.blink_until
                   or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
         fps = self.active_fps if active else self.idle_fps
         self.root.after(max(1, int(round(1000.0 / fps))), self.tick)
