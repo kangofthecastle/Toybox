@@ -346,7 +346,10 @@ class ClipPanel:
         m.add_command(label="✓ Run at login" if enabled else "Run at login",
                       command=app._toggle_startup)
         m.add_separator()
-        m.add_command(label="Hide icon", command=lambda: (self.close(), app.root.withdraw()))
+        if app.icon_visible:
+            m.add_command(label="Hide icon", command=lambda: (self.close(), app.hide_icon()))
+        else:
+            m.add_command(label="Show icon", command=app.show_icon)
         m.add_command(label="Quit", command=app.root.destroy)
         try:
             m.tk_popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
@@ -382,6 +385,7 @@ class ClipboardApp:
         self.store = store
         self.cfg = cfg
         self.panel = None
+        self.icon_visible = True
 
         root.overrideredirect(True)
         root.configure(bg=KEY)
@@ -395,7 +399,7 @@ class ClipboardApp:
         self._draw_icon()
 
         root.update()
-        window.apply_overlay_styles(root, clickthrough=False, no_activate=True)
+        self._apply_styles()
 
         self._moved = False
         self._dx = self._dy = 0
@@ -432,6 +436,19 @@ class ClipboardApp:
         x = max(0, min(int(x), sw - ICON))
         y = max(0, min(int(y), sh - ICON))
         self.root.geometry("%dx%d+%d+%d" % (ICON, ICON, x, y))
+
+    def _apply_styles(self):
+        window.apply_overlay_styles(self.root, clickthrough=False, no_activate=True)
+
+    def hide_icon(self):
+        self.icon_visible = False
+        self.root.withdraw()
+
+    def show_icon(self):
+        self.icon_visible = True
+        self.root.deiconify()
+        self.root.update_idletasks()
+        self._apply_styles()  # re-assert ex-styles after re-showing
 
     def _draw_icon(self):
         c = self.canvas
@@ -524,6 +541,7 @@ def main():
     window.enable_dpi_awareness()
     root = tk.Tk()
     ClipboardApp(root, store, cfg)
+    startup.watch_for_quit("Toybox_clipboard", root.after, root.destroy)
 
     ms = _smoke_ms()
     if ms:

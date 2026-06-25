@@ -146,6 +146,37 @@ class TestSingleInstance(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestQuitEvent(unittest.TestCase):
+    def test_signal_is_seen_by_the_listening_instance(self):
+        import winkit.startup as S
+        name = "ToyboxTest__QUIT__DELETEME"
+        evt = S.create_quit_event(name)
+        self.assertTrue(evt)                       # got a handle to poll
+        self.assertFalse(S.quit_requested(evt))    # nobody has asked it to quit yet
+        self.assertTrue(S.signal_quit(name))       # a listener exists -> signalled
+        self.assertTrue(S.quit_requested(evt))     # the listener now sees the request
+
+    def test_signal_quit_returns_false_when_no_instance(self):
+        import winkit.startup as S
+        self.assertFalse(S.signal_quit("ToyboxTest__QUIT__NOBODY__DELETEME"))
+
+    def test_watch_for_quit_fires_on_quit_after_signal(self):
+        import winkit.startup as S
+        name = "ToyboxTest__WATCH__DELETEME"
+        pending = []                       # fake scheduler: collect callbacks
+        fired = []
+        S.watch_for_quit(name, lambda ms, cb: pending.append(cb),
+                         lambda: fired.append(True), interval_ms=1)
+        self.assertEqual(len(pending), 1)  # initial poll scheduled
+        pending.pop()()                    # run it: not signalled -> reschedule
+        self.assertFalse(fired)
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(S.signal_quit(name))
+        pending.pop()()                    # run it: signalled -> on_quit fires
+        self.assertTrue(fired)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestTrayConstruct(unittest.TestCase):
     def test_construct_and_close(self):
         import winkit.tray as T

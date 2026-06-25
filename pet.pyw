@@ -373,6 +373,7 @@ def main():
 
     pet = Pet(root, canvas, cfg)
     pet.tick()
+    startup.watch_for_quit("Toybox_pet", root.after, root.destroy)
 
     ms = _smoke_ms()
     if ms:

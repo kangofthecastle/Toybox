@@ -212,6 +212,7 @@ def main():
     window.apply_overlay_styles(root, clickthrough=False, tool_window=True)
 
     Hud(root, cfg)
+    startup.watch_for_quit("Toybox_hud", root.after, root.destroy)
 
     ms = _smoke_ms()
     if ms:

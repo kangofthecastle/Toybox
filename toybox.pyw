@@ -47,10 +47,13 @@ def main():
             procs[key] = None
 
     def stop(key):
+        # Ask ANY running instance to quit gracefully (covers toys started at
+        # login or by a previous launcher, which we hold no process handle for).
+        startup.signal_quit("Toybox_" + key)
         proc = procs.get(key)
         if proc is not None and proc.poll() is None:
             try:
-                proc.terminate()
+                proc.terminate()  # fast path / fallback for a toy we spawned
             except Exception:
                 pass
         procs[key] = None
