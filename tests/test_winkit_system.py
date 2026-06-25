@@ -203,5 +203,55 @@ class TestApps(unittest.TestCase):
         self.assertIsInstance(name, str)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestPinHelpers(unittest.TestCase):
+    def test_is_topmost_reads_exstyle_bit(self):
+        # is_topmost() reads the WS_EX_TOPMOST extended-style bit. We drive the
+        # bit via tk's own "-topmost" attribute because a raw SetWindowPos(
+        # HWND_TOPMOST) on a freshly-created Tk window is silently ignored once
+        # an earlier test in the same process has created+destroyed a window
+        # that received a SetWindowPos (a GUI-thread z-order quirk; reproduced
+        # deterministically after TestOverlayStyles). tk's -topmost path is not
+        # affected, so it gives a reliable on/off bit to assert the reader.
+        import winkit.window as W
+        W.enable_dpi_awareness()
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.geometry("60x60+0+0")
+        root.update()
+        try:
+            hwnd = W._hwnd_of(root)
+            root.attributes("-topmost", True)
+            root.update()
+            self.assertTrue(W.is_topmost(hwnd))
+            root.attributes("-topmost", False)
+            root.update()
+            self.assertFalse(W.is_topmost(hwnd))
+        finally:
+            root.destroy()
+
+    def test_set_topmost_returns_setwindowpos_bool(self):
+        # set_topmost() returns the SetWindowPos BOOL; both the HWND_TOPMOST and
+        # HWND_NOTOPMOST sentinels must dispatch successfully on a real HWND.
+        import winkit.window as W
+        W.enable_dpi_awareness()
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.geometry("60x60+0+0")
+        root.update()
+        try:
+            hwnd = W._hwnd_of(root)
+            self.assertTrue(W.set_topmost(hwnd, True))
+            self.assertTrue(W.set_topmost(hwnd, False))
+        finally:
+            root.destroy()
+
+    def test_root_window_at_returns_int(self):
+        import winkit.window as W
+        self.assertIsInstance(W.root_window_at(0, 0), int)
+
+
 if __name__ == "__main__":
     unittest.main()

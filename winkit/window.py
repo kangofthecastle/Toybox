@@ -22,6 +22,11 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 
+WS_EX_TOPMOST = 0x00000008
+GA_ROOT = 2
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+
 #: Sentinel transparent color for shaped pet windows. Never paint with it.
 KEY_COLOR = "#010101"
 
@@ -40,6 +45,10 @@ _user32.SetWindowPos.argtypes = [
     wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
     ctypes.c_int, ctypes.c_int, wintypes.UINT,
 ]
+_user32.WindowFromPoint.restype = wintypes.HWND
+_user32.WindowFromPoint.argtypes = [wintypes.POINT]
+_user32.GetAncestor.restype = wintypes.HWND
+_user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 
 
 def enable_dpi_awareness():
@@ -87,3 +96,25 @@ def apply_overlay_styles(window, *, clickthrough=False, tool_window=True, no_act
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE,
     )
     return hwnd
+
+
+def is_topmost(hwnd):
+    return bool(int(_get(hwnd, GWL_EXSTYLE) or 0) & WS_EX_TOPMOST)
+
+
+def set_topmost(hwnd, on):
+    """Toggle a window's always-on-top z-order. Returns the SetWindowPos BOOL."""
+    insert_after = HWND_TOPMOST if on else HWND_NOTOPMOST
+    return bool(_user32.SetWindowPos(
+        hwnd, ctypes.c_void_p(insert_after), 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
+
+
+def root_window_at(x, y):
+    """The top-level (root ancestor) window under screen point (x, y); 0 if none."""
+    pt = wintypes.POINT(x, y)
+    hwnd = _user32.WindowFromPoint(pt)
+    if not hwnd:
+        return 0
+    root = _user32.GetAncestor(hwnd, GA_ROOT)
+    return int(root or hwnd)
