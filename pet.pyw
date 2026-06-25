@@ -235,6 +235,11 @@ class Cat:
             dy = int(round(ecy + oy - z / 2.0))
             dx = min(max(dx, bxi), bxi + base - z)
             dy = min(max(dy, byi), byi + base - z)
+            # Coarsen the gaze: snap the dot to a 2px grid (~3 positions/axis) so it
+            # reads pixel-art-steppy rather than continuously sliding.
+            step = max(1, z // 2)
+            dx = bxi + int(round((dx - bxi) / step)) * step
+            dy = byi + int(round((dy - byi) / step)) * step
             self.canvas.coords(e["dot"], dx, dy, dx + z, dy + z)
             self.canvas.itemconfig(e["base"], state="normal")
             self.canvas.itemconfig(e["dot"], state="normal")
