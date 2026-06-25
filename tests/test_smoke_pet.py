@@ -39,5 +39,33 @@ class TestPetPhase2Wiring(unittest.TestCase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestPetPhase3FocusReminders(unittest.TestCase):
+    def test_cat_has_focus_and_reminder_objects_and_ticks(self):
+        import tkinter as tk
+        import winkit.window as window
+        import config
+        import pet as petmod
+
+        window.enable_dpi_awareness()
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.configure(bg=window.KEY_COLOR)
+        root.geometry("%dx%d+100+100" % (petmod.WIN, petmod.WIN))
+        canvas = tk.Canvas(root, width=petmod.WIN, height=petmod.WIN,
+                           bg=window.KEY_COLOR, highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+        root.update()
+        try:
+            cat = petmod.Cat(root, canvas, config.defaults())
+            self.assertTrue(hasattr(cat, "pomodoro"))
+            self.assertTrue(hasattr(cat, "reminders"))
+            self.assertEqual(cat.pomodoro.state, "idle")
+            cat.tick()                # one tick must run the focus/reminder paths
+            cat.close()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

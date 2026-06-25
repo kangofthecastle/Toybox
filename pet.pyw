@@ -30,6 +30,8 @@ import petkit.glow as glow
 import petkit.reactions as reactions
 import petkit.greeter as greeter
 import petkit.bubble as bubble
+import petkit.pomodoro as pomodoro
+import petkit.reminders as reminders
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets", "cat")
@@ -122,6 +124,12 @@ class Cat:
         self._purred = False          # one-shot edge for the "purr~" bubble
         self._next_zzz = 0.0
 
+        # Phase 3 "assistant": focus/Pomodoro timer + natural-language reminders.
+        self.pomodoro = pomodoro.Pomodoro(focus_s=int(pet.get("focus_min", 25)) * 60,
+                                          break_s=int(pet.get("break_min", 5)) * 60)
+        self.reminders = reminders.Reminders(os.path.join(HERE, "reminders.json"))
+        self._next_reminder_check = 0.0   # low-rate reminder cursor (monotonic)
+
         self._drag_dx = self._drag_dy = 0
         self._moved = False
         canvas.configure(cursor="fleur")
@@ -192,12 +200,23 @@ class Cat:
             pass
 
     def _on_right_click(self, event):
+        pet = self.cfg["pet"]
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="\U0001F431 Cat", state="disabled")
         m.add_separator()
+        if self.pomodoro.state == "idle":
+            m.add_command(label="Focus %d min" % int(pet.get("focus_min", 25)),
+                          command=self._start_focus)
+        else:
+            left = int(self.pomodoro.remaining(time.monotonic()))
+            m.add_command(label="Stop focus (%d:%02d left)" % divmod(left, 60),
+                          command=self._stop_focus)
+        m.add_command(label="Add reminder…", command=self._add_reminder_dialog)
+        m.add_separator()
         for key, label in (("petting", "Petting & purr"),
                            ("catnap", "Box catnap"),
-                           ("greeter", "Welcome-back greeting")):
+                           ("greeter", "Welcome-back greeting"),
+                           ("reminders", "Reminders")):
             m.add_checkbutton(label=label, onvalue=1, offvalue=0,
                               variable=self._menu_var(key),
                               command=lambda k=key: self._toggle_cfg(k))
@@ -207,6 +226,53 @@ class Cat:
             m.tk_popup(event.x_root, event.y_root)
         finally:
             m.grab_release()
+
+    # --- focus timer + reminders (Phase 3) ------------------------------
+    def _start_focus(self):
+        self.pomodoro.start(time.monotonic())
+        self.bubble.say("Focus on \U0001F43E", secs=2)
+
+    def _stop_focus(self):
+        self.pomodoro.cancel()
+
+    def _add_reminder_dialog(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Add reminder")
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+        try:
+            dlg.geometry("+%d+%d" % (self.root.winfo_rootx(),
+                                     max(0, self.root.winfo_rooty() - 40)))
+        except tk.TclError:
+            pass
+        tk.Label(dlg, text="Remind me… (e.g. “drink water in 20m”)"
+                 ).pack(padx=10, pady=(10, 4))
+        entry = tk.Entry(dlg, width=36)
+        entry.pack(padx=10, pady=4)
+        entry.focus_set()
+
+        def submit(_event=None):
+            text = entry.get()
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+            parsed = reminders.parse_reminder(text, time.time())
+            if parsed:
+                self.reminders.add(*parsed)
+                self.bubble.say("Reminder set \U0001F43E", secs=2)
+            else:
+                self.bubble.say("Couldn't read a time \U0001F63F", secs=3)
+
+        def cancel(_event=None):
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+
+        tk.Button(dlg, text="OK", command=submit).pack(pady=(4, 10))
+        dlg.bind("<Return>", submit)
+        dlg.bind("<Escape>", cancel)
 
     # --- per-frame ------------------------------------------------------
     def _hop_offset(self, now):
@@ -380,6 +446,19 @@ class Cat:
             self.bubble.say("Zzz", secs=2)
             self._next_zzz = now + 6.0
 
+        # Focus/Pomodoro timer (runs regardless of nap; injected monotonic clock).
+        ev = self.pomodoro.update(now)
+        if ev == "focus_done":
+            self.bubble.say("Break time! \U0001F43E", secs=4, chime=True)
+        elif ev == "break_done":
+            self.bubble.say("Back to it? \U0001F431", secs=4, chime=True)
+
+        # Reminders, low-rate (<=1/5s); fired reminders use wall-clock epoch.
+        if pet.get("reminders", True) and now >= self._next_reminder_check:
+            self._next_reminder_check = now + 5.0
+            for text in self.reminders.due(time.time()):
+                self.bubble.say("⏰ " + text, secs=5, chime=True)
+
         try:
             self.draw(now)
         except tk.TclError:
@@ -391,7 +470,8 @@ class Cat:
             active = ((now - self.last_loud) < IDLE_AFTER_S
                       or self.hop_t is not None
                       or now < self.blink_until
-                      or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
+                      or (now - self._last_cursor_move) < CURSOR_ACTIVE_S
+                      or self.pomodoro.state in ("focus", "break"))
             fps = self.active_fps if active else self.idle_fps
         self.root.after(max(1, int(round(1000.0 / fps))), self.tick)
 
