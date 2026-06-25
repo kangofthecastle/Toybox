@@ -35,7 +35,9 @@ import petkit.reminders as reminders
 import petkit.nudges as nudges
 import petkit.clip_actions as clip_actions
 import petkit.focus_tracker as focus_tracker
+import petkit.pins as pins
 import winkit.apps as apps
+import winkit.dnd as dnd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets", "cat")
@@ -141,6 +143,23 @@ class Cat:
         self._clip_seq = wkinput.clipboard_sequence()
         self._next_focus_sample = 0.0     # low-rate focus-sample cursor (monotonic)
 
+        # Phase 4 "power-tools": Pin (hotkey toggles any window always-on-top) and
+        # Catch & Carry (drop files on the cat; click to release as CF_HDROP).
+        # Both event-driven (hotkey edge / WM_DROPFILES) -- no per-frame cost.
+        self.hwnd = window._hwnd_of(root)
+        self.pinset = pins.PinSet(window.set_topmost)
+        self._held = []                   # files the cat is currently carrying
+        if pet.get("pin", True):
+            self.pin_hotkey = wkinput.HotkeyPoller(
+                root, pet.get("pin_hotkey") or ["ctrl", "shift", "P"],
+                self._toggle_pin)
+        else:
+            self.pin_hotkey = None
+        if pet.get("carry", True):
+            self.drop_target = dnd.FileDropTarget(self.hwnd, self._on_files_dropped)
+        else:
+            self.drop_target = None
+
         self._drag_dx = self._drag_dy = 0
         self._moved = False
         canvas.configure(cursor="fleur")
@@ -164,6 +183,10 @@ class Cat:
 
     def _on_release(self, event):
         if not self._moved:
+            # A plain click (no drag): if the cat is carrying files, release them
+            # onto the clipboard. Otherwise nothing to persist.
+            if self._held:
+                self._release_held()
             return
         self._moved = False
         self.cfg["pet"]["x"] = self.root.winfo_x()
@@ -187,6 +210,34 @@ class Cat:
                 self._purred = True
         else:
             self._purred = False
+
+    # --- Pin + Catch & Carry (Phase 4) ----------------------------------
+    def _toggle_pin(self):
+        if not self.cfg["pet"].get("pin", True):
+            return
+        x, y = wkinput.cursor_pos()
+        hwnd = window.root_window_at(x, y)
+        if not hwnd or hwnd == self.hwnd:      # ignore empty desktop / the cat itself
+            return
+        on = self.pinset.toggle(hwnd)
+        self.bubble.say("\U0001F4CC pinned" if on else "unpinned", secs=2)
+
+    def _unpin_all(self):
+        self.pinset.unpin_all()
+        self.bubble.say("Unpinned all \U0001F431", secs=2)
+
+    def _on_files_dropped(self, paths):
+        if not self.cfg["pet"].get("carry", True):
+            return
+        self._held = list(paths)
+        n = len(self._held)
+        self.bubble.say("Caught %d file%s \U0001F43E (click to drop)"
+                        % (n, "" if n == 1 else "s"), secs=4)
+
+    def _release_held(self):
+        if self._held and dnd.set_clipboard_files(self._held):
+            self.bubble.say("Ready to paste (Ctrl+V) \U0001F431", secs=4)
+        self._held = []
 
     # --- right-click menu -----------------------------------------------
     def _menu_var(self, key):
@@ -245,6 +296,16 @@ class Cat:
                                 command=lambda t=text: self._cancel_reminder(t))
             m.add_cascade(label="Reminders (%d)" % len(pending), menu=sub)
         m.add_command(label="Today's apps…", command=self._show_top_apps)
+        # Catch & Carry: when holding files, offer drop-to-clipboard / let-go.
+        if self._held:
+            m.add_command(label="Drop %d file(s) → clipboard" % len(self._held),
+                          command=self._release_held)
+            m.add_command(label="Let go",
+                          command=lambda: setattr(self, "_held", []))
+        # Pin: offer a bulk unpin when any windows are pinned.
+        if self.pinset.pinned():
+            m.add_command(label="Unpin all (%d)" % len(self.pinset.pinned()),
+                          command=self._unpin_all)
         m.add_separator()
         for key, label in (("petting", "Petting & purr"),
                            ("catnap", "Box catnap"),
@@ -252,7 +313,9 @@ class Cat:
                            ("reminders", "Reminders"),
                            ("nudges", "Break nudges"),
                            ("clip_actions", "Clipboard helper"),
-                           ("focus_tracker", "Track app focus")):
+                           ("focus_tracker", "Track app focus"),
+                           ("pin", "Pin window (hotkey)"),
+                           ("carry", "Catch & carry files")):
             m.add_checkbutton(label=label, onvalue=1, offvalue=0,
                               variable=self._menu_var(key),
                               command=lambda k=key: self._toggle_cfg(k))
@@ -570,6 +633,22 @@ class Cat:
     def close(self):
         try:
             self.meter.close()
+        except Exception:
+            pass
+        # Phase 4: tear down native power-tool resources so quitting is clean.
+        try:
+            if getattr(self, "pin_hotkey", None):
+                self.pin_hotkey.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "pinset", None):
+                self.pinset.unpin_all()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "drop_target", None):
+                self.drop_target.close()
         except Exception:
             pass
 

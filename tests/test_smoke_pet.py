@@ -95,5 +95,38 @@ class TestPetPhase3NudgeClipFocus(unittest.TestCase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestPetPhase4PinCarry(unittest.TestCase):
+    def test_cat_has_pin_carry_objects_and_ticks(self):
+        import tkinter as tk
+        import winkit.window as window
+        import config
+        import pet as petmod
+
+        window.enable_dpi_awareness()
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.configure(bg=window.KEY_COLOR)
+        root.geometry("%dx%d+100+100" % (petmod.WIN, petmod.WIN))
+        canvas = tk.Canvas(root, width=petmod.WIN, height=petmod.WIN,
+                           bg=window.KEY_COLOR, highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+        root.update()
+        try:
+            cat = petmod.Cat(root, canvas, config.defaults())
+            self.assertTrue(hasattr(cat, "pinset"))
+            self.assertIsInstance(cat.hwnd, int)
+            self.assertNotEqual(cat.hwnd, 0)
+            # A drop holds the files; releasing clears the held list.
+            cat._on_files_dropped(["C:\\a.txt", "C:\\b.txt"])
+            self.assertEqual(cat._held, ["C:\\a.txt", "C:\\b.txt"])
+            cat._release_held()
+            self.assertEqual(cat._held, [])
+            cat.tick()                # one tick must run with the new wiring
+            cat.close()               # tears down poller/target/pins cleanly
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
