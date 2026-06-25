@@ -33,6 +33,26 @@ class TestOverlayStyles(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_non_clickthrough_is_layered_but_hit_testable(self):
+        import winkit.window as W
+        W.enable_dpi_awareness()
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.geometry("50x50+0+0")
+        root.update()
+        try:
+            hwnd = W.apply_overlay_styles(root, clickthrough=False)
+            getp = getattr(ctypes.windll.user32, "GetWindowLongPtrW",
+                           ctypes.windll.user32.GetWindowLongW)
+            getp.restype = ctypes.c_void_p
+            getp.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            ex = int(getp(hwnd, GWL_EXSTYLE) or 0)
+            self.assertTrue(ex & WS_EX_LAYERED)        # still translucent/shaped
+            self.assertFalse(ex & WS_EX_TRANSPARENT)   # but clicks land on opaque pixels
+        finally:
+            root.destroy()
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestMetrics(unittest.TestCase):

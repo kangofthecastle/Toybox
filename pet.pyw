@@ -1,10 +1,12 @@
 """Music-Reactive Pet -- a cute desktop blob that breathes when quiet and
 dances to your system audio.
 
-A small (~170x170) borderless, transparent, click-through, always-on-top
-window sits near the bottom-center of the primary screen. A procedurally drawn
-blob creature breathes gently when silent and squashes / hops / warms in color
-in response to the system output peak (WASAPI) run through a beat detector.
+A small (~170x170) borderless, transparent, always-on-top window sits near the
+bottom-center of the primary screen. Grab the blob to drag it anywhere (the
+position persists); the transparent margin around it stays click-through, so the
+pet never blocks the windows beneath. A procedurally drawn blob creature breathes
+gently when silent and squashes / hops / warms in color in response to the system
+output peak (WASAPI) run through a beat detector.
 
 Lightweight: adaptive frame rate -- ~8 fps idle breathing, ~30 fps active
 dancing -- and canvas items are reused (coords/itemconfig) rather than redrawn
@@ -103,6 +105,41 @@ class Pet:
                                         capstyle=tk.ROUND, state="hidden")
         self.lid_r = canvas.create_line(0, 0, 0, 0, fill=OUTLINE, width=3,
                                         capstyle=tk.ROUND, state="hidden")
+
+        # Dragging: grab the blob to move the pet. The window is not fully
+        # click-through (the transparent margin still is, via the color key),
+        # so clicks land only on the creature's pixels. Position persists.
+        self._drag_dx = 0
+        self._drag_dy = 0
+        self._moved = False
+        canvas.configure(cursor="fleur")
+        for w in (root, canvas):
+            w.bind("<ButtonPress-1>", self._on_press)
+            w.bind("<B1-Motion>", self._on_drag)
+            w.bind("<ButtonRelease-1>", self._on_release)
+
+    # --- dragging --------------------------------------------------------
+    def _on_press(self, event):
+        self._moved = False
+        self._drag_dx = event.x_root - self.root.winfo_x()
+        self._drag_dy = event.y_root - self.root.winfo_y()
+
+    def _on_drag(self, event):
+        self._moved = True
+        x = event.x_root - self._drag_dx
+        y = event.y_root - self._drag_dy
+        self.root.geometry("+%d+%d" % (x, y))
+
+    def _on_release(self, event):
+        if not self._moved:
+            return  # a plain click (no drag) must not rewrite config.json
+        self._moved = False
+        self.cfg["pet"]["x"] = self.root.winfo_x()
+        self.cfg["pet"]["y"] = self.root.winfo_y()
+        try:
+            config.save(CFG_PATH, self.cfg)
+        except Exception:
+            pass
 
     # --- reactions -------------------------------------------------------
     def _start_hop(self, now):
@@ -300,7 +337,10 @@ def main():
     canvas.pack(fill="both", expand=True)
 
     root.update()                            # realize the HWND before ex-styles
-    window.apply_overlay_styles(root, clickthrough=True)
+    # Not fully click-through: the color key already passes clicks through the
+    # transparent margin, while the blob's pixels stay grabbable for dragging.
+    # no_activate keeps the pet from stealing focus when you nudge it.
+    window.apply_overlay_styles(root, clickthrough=False, no_activate=True)
 
     pet = Pet(root, canvas, cfg)
     pet.tick()
