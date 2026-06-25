@@ -47,6 +47,13 @@ class NapState:
         self.state = "awake"
         self._startle_start = 0.0
 
+    def reset(self):
+        """Drop straight back to 'awake' with no startle -- used when the catnap
+        ability is toggled, so a stale internal 'napping' can't fire a spurious
+        startle hop when the ability is re-enabled."""
+        self.state = "awake"
+        self._startle_start = 0.0
+
     def update(self, idle_ms, now):
         if self.state == "awake":
             if idle_ms >= self.sleep_after_ms:

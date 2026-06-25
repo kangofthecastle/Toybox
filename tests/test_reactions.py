@@ -57,3 +57,11 @@ class TestNapState(unittest.TestCase):
         n.update(5, now=2.0)                     # startled
         n.update(5, now=2.6)                     # awake
         self.assertEqual(n.update(130000, now=3.0), "napping")
+
+    def test_reset_returns_to_awake_without_startling(self):
+        n = NapState(sleep_after_ms=120000)
+        n.update(130000, now=1.0)               # napping
+        n.reset()
+        self.assertEqual(n.state, "awake")
+        # After a reset, fresh activity must NOT produce a (spurious) startle.
+        self.assertEqual(n.update(5, now=2.0), "awake")

@@ -118,7 +118,8 @@ class Cat:
         self.nap_state = "awake"
         self.nap_frame_i = 0
         self.nap_frame_t = self.t0
-        self._petting_was = False
+        self._petting_was = False     # squint state, refreshed each tick
+        self._purred = False          # one-shot edge for the "purr~" bubble
         self._next_zzz = 0.0
 
         self._drag_dx = self._drag_dy = 0
@@ -158,12 +159,15 @@ class Cat:
         now = time.monotonic()
         inside = (abs(event.x - self.cx) < self.sprite_px / 2.0
                   and (self.base_y - self.sprite_px) < event.y < self.base_y)
+        # Feed the detector here (events only fire on motion); the squint itself
+        # is refreshed every tick from petting.active() so it releases when the
+        # stroking lapses even if the cursor then holds still (no more <Motion>).
         if self.petting.update(event.x_root, inside, now):
-            if not self._petting_was and self.cfg["pet"].get("petting", True):
+            if not self._purred and self.cfg["pet"].get("petting", True):
                 self.bubble.say("purr~", secs=2)
-            self._petting_was = True
+                self._purred = True
         else:
-            self._petting_was = False
+            self._purred = False
 
     # --- right-click menu -----------------------------------------------
     def _menu_var(self, key):
@@ -179,6 +183,9 @@ class Cat:
     def _toggle_cfg(self, key):
         self.cfg["pet"][key] = not self.cfg["pet"].get(key, True)
         self._menu_var(key).set(1 if self.cfg["pet"][key] else 0)
+        if key == "catnap":
+            self.nap.reset()          # clear any stale internal nap state
+            self.nap_state = "awake"
         try:
             config.save(CFG_PATH, self.cfg)
         except Exception:
@@ -352,6 +359,9 @@ class Cat:
 
         # Idle-driven nap cycle + welcome-back greeting (one O(1) Win32 probe).
         pet = self.cfg["pet"]
+        # Refresh the contented-squint from the live petting state so it relaxes
+        # when stroking lapses (reversals age out) even with the cursor at rest.
+        self._petting_was = pet.get("petting", True) and self.petting.active(now)
         idle = wkinput.idle_ms()
         prev_nap = self.nap_state
         if pet.get("catnap", True):
