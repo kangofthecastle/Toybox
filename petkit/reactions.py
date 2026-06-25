@@ -35,3 +35,27 @@ class PettingDetector:
     def active(self, now):
         self._prune(now)
         return len(self._reversals) >= self.reversals_needed
+
+
+class NapState:
+    """Idle-driven nap cycle: awake -> napping (idle exceeds threshold) ->
+    startled (fresh input while napping) -> awake (after startle_s)."""
+
+    def __init__(self, sleep_after_ms=120000, startle_s=0.8):
+        self.sleep_after_ms = sleep_after_ms
+        self.startle_s = startle_s
+        self.state = "awake"
+        self._startle_start = 0.0
+
+    def update(self, idle_ms, now):
+        if self.state == "awake":
+            if idle_ms >= self.sleep_after_ms:
+                self.state = "napping"
+        elif self.state == "napping":
+            if idle_ms < self.sleep_after_ms:   # input arrived -> jolt awake
+                self.state = "startled"
+                self._startle_start = now
+        elif self.state == "startled":
+            if now - self._startle_start >= self.startle_s:
+                self.state = "awake"
+        return self.state

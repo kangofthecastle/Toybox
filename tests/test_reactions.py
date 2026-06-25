@@ -1,5 +1,6 @@
 import unittest
 from petkit.reactions import PettingDetector
+from petkit.reactions import NapState
 
 
 class TestPettingDetector(unittest.TestCase):
@@ -32,3 +33,27 @@ class TestPettingDetector(unittest.TestCase):
             d.update(x, True, now=i * 0.1)
         self.assertTrue(d.active(now=0.6))
         self.assertFalse(d.active(now=5.0))  # all reversals older than window_s
+
+
+class TestNapState(unittest.TestCase):
+    def test_starts_awake(self):
+        n = NapState(sleep_after_ms=120000)
+        self.assertEqual(n.update(0, now=0.0), "awake")
+
+    def test_naps_after_idle_threshold(self):
+        n = NapState(sleep_after_ms=120000)
+        self.assertEqual(n.update(130000, now=1.0), "napping")
+
+    def test_activity_during_nap_startles_then_wakes(self):
+        n = NapState(sleep_after_ms=120000, startle_s=0.8)
+        n.update(130000, now=1.0)               # napping
+        self.assertEqual(n.update(5, now=2.0), "startled")
+        self.assertEqual(n.update(5, now=2.5), "startled")   # still inside startle_s
+        self.assertEqual(n.update(5, now=3.0), "awake")      # startle_s elapsed
+
+    def test_can_renap_after_waking(self):
+        n = NapState(sleep_after_ms=120000, startle_s=0.5)
+        n.update(130000, now=1.0)               # napping
+        n.update(5, now=2.0)                     # startled
+        n.update(5, now=2.6)                     # awake
+        self.assertEqual(n.update(130000, now=3.0), "napping")
