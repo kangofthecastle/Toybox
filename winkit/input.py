@@ -41,6 +41,21 @@ def clipboard_sequence():
     return int(_user32.GetClipboardSequenceNumber())
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+_user32.GetCursorPos.argtypes = [ctypes.POINTER(_POINT)]
+_user32.GetCursorPos.restype = ctypes.c_int  # BOOL
+
+
+def cursor_pos():
+    """Global mouse cursor position in screen pixels, as an (x, y) tuple."""
+    pt = _POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))
+    return (pt.x, pt.y)
+
+
 class HotkeyPoller:
     """Edge-detected hotkey-combo poller driven by tkinter's after() loop.
 

@@ -86,6 +86,13 @@ class TestInput(unittest.TestCase):
         import winkit.input as I
         self.assertIsInstance(I.key_down(0x10), bool)  # shift, almost certainly up
 
+    def test_cursor_pos_returns_int_pair(self):
+        import winkit.input as I
+        pos = I.cursor_pos()
+        self.assertEqual(len(pos), 2)
+        self.assertIsInstance(pos[0], int)
+        self.assertIsInstance(pos[1], int)
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestAudioMeter(unittest.TestCase):

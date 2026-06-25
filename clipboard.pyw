@@ -68,6 +68,15 @@ class ClipboardApp:
         self.visible = []           # list of (original_index, display_line) currently shown
         # Seed with the current sequence so the first real copy registers as a change.
         self._last_seq = wkinput.clipboard_sequence()
+        # Also seed history with whatever text is already on the clipboard, so the
+        # very first hotkey press has something to show (e.g. text copied before
+        # this watcher was started).
+        try:
+            existing = self.root.clipboard_get()
+            if existing and existing.strip():
+                self.history.add(existing)
+        except tk.TclError:
+            pass
         self._poll_clipboard()
         # Global hotkey -> open picker. Fall back to the default chord if the
         # configured hotkey contains an unknown key token.
@@ -101,8 +110,6 @@ class ClipboardApp:
         # latest history and lands on top with focus.
         if self.picker is not None and self.picker.winfo_exists():
             self._close_picker()
-        if len(self.history) == 0:
-            return  # nothing to show
 
         win = tk.Toplevel(self.root)
         self.picker = win
@@ -190,6 +197,11 @@ class ClipboardApp:
             self.listbox.selection_set(0)
             self.listbox.activate(0)
             self.listbox.see(0)
+        else:
+            hint = ("  (no matches)" if len(self.history)
+                    else "  (clipboard history is empty — copy some text)")
+            self.listbox.insert(tk.END, hint)
+            self.listbox.itemconfig(0, foreground=DIM)
 
     # -- navigation --------------------------------------------------------
     def _current_index(self):

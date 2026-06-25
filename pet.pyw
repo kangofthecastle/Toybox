@@ -24,6 +24,7 @@ import tkinter as tk
 
 import winkit.window as window
 import winkit.audio as audio
+import winkit.input as wkinput
 import beat_detector
 import config
 
@@ -36,6 +37,7 @@ CX = WIN / 2.0            # creature horizontal center
 GROUND_Y = WIN - 28       # y of the bottom of the feet / top of the shadow
 SILENCE_ENVELOPE = 0.012  # envelope below this counts as "quiet"
 IDLE_AFTER_S = 2.0        # seconds of quiet before dropping to idle fps
+CURSOR_ACTIVE_S = 1.0     # stay at dancing fps this long after the cursor moves
 
 
 def _smoke_ms():
@@ -88,6 +90,9 @@ class Pet:
         self.next_idle_blink = self.t0 + random.uniform(2.0, 5.0)
         self.beat_kind = 0           # cycles hop/wiggle/blink for variety
         self.envelope = 0.0          # smoothed, for color/size
+        self._cursor = wkinput.cursor_pos()   # latest global cursor, for eye tracking
+        self._last_cursor = self._cursor
+        self._last_cursor_move = -1e9
 
         # Pre-create canvas items once; we only move/recolor them per frame.
         self.shadow = canvas.create_oval(0, 0, 0, 0, fill="#0c2424", outline="")
@@ -240,11 +245,13 @@ class Pet:
         self.canvas.itemconfig(self.belly, fill=_mix(CALM_BELLY, WARM_BELLY, env * 1.4))
 
     def _draw_face(self, cx, cy, hw, hh, env, now):
-        # Eyes sit in the upper third; look slightly toward the sway direction.
+        # Eyes sit in the upper third; pupils point toward the mouse cursor.
         eye_dx = hw * 0.42
         eye_y = cy - hh * 0.18
         er = 7.5 + env * 2.0          # eye (white) radius
-        look = max(-1.6, min(1.6, (cx - CX) * 0.10))
+        gx, gy = self._cursor
+        rootx = self.root.winfo_rootx()   # window's top-left in screen pixels
+        rooty = self.root.winfo_rooty()
 
         # Idle blink scheduling (only when not already blinking).
         if now >= self.next_idle_blink and now >= self.blink_until:
@@ -269,10 +276,21 @@ class Pet:
                 self.canvas.itemconfig(hi, state="normal")
                 self.canvas.coords(eye, ex - er, eye_y - er, ex + er, eye_y + er)
                 pr = er * 0.55
-                px, py = ex + look, eye_y + er * 0.12
+                # Deflect the pupil toward the cursor, eased to centre when the
+                # cursor is right on the eye, clamped so it stays in the white.
+                maxoff = er - pr - 0.5
+                vx = gx - (rootx + ex)
+                vy = gy - (rooty + eye_y)
+                d = math.hypot(vx, vy)
+                if d > 1e-3:
+                    f = min(1.0, d / 55.0) * maxoff / d
+                    ox, oy = vx * f, vy * f
+                else:
+                    ox = oy = 0.0
+                px, py = ex + ox, eye_y + oy
                 self.canvas.coords(pup, px - pr, py - pr, px + pr, py + pr)
                 hr = er * 0.22
-                hx, hy = ex + look - pr * 0.5, eye_y - er * 0.35
+                hx, hy = px - pr * 0.45, py - pr * 0.45
                 self.canvas.coords(hi, hx - hr, hy - hr, hx + hr, hy + hr)
 
     # --- main tick -------------------------------------------------------
@@ -281,6 +299,12 @@ class Pet:
         peak = self.meter.read()
         r = self.det.update(peak, now)
         self.envelope = r["envelope"]
+
+        cur = wkinput.cursor_pos()
+        if cur != self._last_cursor:
+            self._last_cursor = cur
+            self._last_cursor_move = now
+        self._cursor = cur
 
         if self.envelope > SILENCE_ENVELOPE:
             self.last_loud = now
@@ -292,8 +316,11 @@ class Pet:
         except tk.TclError:
             return  # window is being torn down
 
-        # Adaptive frame rate: active while audio is present, idle when quiet.
-        active = (now - self.last_loud) < IDLE_AFTER_S or self.hop_t is not None
+        # Adaptive frame rate: dance-fps while audio is present OR the cursor is
+        # moving (smooth eye tracking); idle fps when nothing is happening.
+        active = ((now - self.last_loud) < IDLE_AFTER_S
+                  or self.hop_t is not None
+                  or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
         fps = self.active_fps if active else self.idle_fps
         delay = max(1, int(round(1000.0 / fps)))
         self.root.after(delay, self.tick)
