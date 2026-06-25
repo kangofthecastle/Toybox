@@ -9,8 +9,15 @@ import zlib
 
 SHEET = os.path.join(os.path.dirname(__file__), "..", "assets", "cat", "Idle.png")
 FW = FH = 32
-EYE_BAND = range(8, 18)   # rows where the eyes live
+EYE_BAND = range(11, 16)  # rows the eye almonds occupy (excludes the brow ridge)
 DARK = 95                 # luminance below this counts as "eye/outline ink"
+
+
+def centroid(pts, fallback):
+    if not pts:
+        return fallback
+    return (round(sum(p[0] for p in pts) / len(pts)),
+            round(sum(p[1] for p in pts) / len(pts)))
 
 
 def _decode_rgba(path):
@@ -44,19 +51,24 @@ def main():
     for fi in range(frames):
         groups = {"l": [], "r": []}
         for y in EYE_BAND:
+            dark = []
             for x in range(FW):
                 o = (y * W + fi * FW + x) * ch
                 r, g, b = px[o], px[o + 1], px[o + 2]
                 a = px[o + 3] if ch == 4 else 255
                 if a > 0 and (0.299 * r + 0.587 * g + 0.114 * b) < DARK:
-                    groups["l" if x < FW // 2 else "r"].append((x, y))
-        def centroid(pts, fallback):
-            if not pts:
-                return fallback
-            return (round(sum(p[0] for p in pts) / len(pts)),
-                    round(sum(p[1] for p in pts) / len(pts)))
-        left = centroid(groups["l"], (12, 13))
-        right = centroid(groups["r"], (20, 13))
+                    dark.append((x, y))
+            # The leftmost/rightmost dark pixels are the head outline, not the
+            # eye -- drop them so they can't drag the centroid onto the border.
+            interior = dark[1:-1]
+            if not interior:
+                continue
+            # Split the remaining interior ink into the two eyes about its midpoint.
+            mid = (interior[0][0] + interior[-1][0]) / 2.0
+            for x, y in interior:
+                groups["l" if x <= mid else "r"].append((x, y))
+        left = centroid(groups["l"], (8, 13))
+        right = centroid(groups["r"], (13, 13))
         table.append((left, right))
     print('    "idle": [')
     for left, right in table:

@@ -28,6 +28,14 @@ class TestPupilOffset(unittest.TestCase):
         for left, right in table:
             for (x, y) in (left, right):
                 self.assertTrue(0 <= x < 32 and 0 <= y < 32)
+            # Anchors must sit on the eye clusters, not the head outline.
+            # The left eye lives around col 8, the right around col 13, and both
+            # eyes sit on rows 13-14; the old outline drift (right x=18) fails here.
+            (lx, ly), (rx, ry) = left, right
+            self.assertTrue(6 <= lx <= 10, f"left eye x={lx} off the eye")
+            self.assertTrue(11 <= rx <= 15, f"right eye x={rx} off the eye")
+            self.assertTrue(11 <= ly <= 15, f"left eye y={ly} off the eye")
+            self.assertTrue(11 <= ry <= 15, f"right eye y={ry} off the eye")
 
 
 if __name__ == "__main__":
