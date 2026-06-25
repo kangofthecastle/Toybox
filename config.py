@@ -15,7 +15,8 @@ DEFAULTS = {
             "nap_after_s": 120, "away_after_s": 300,
             "focus_min": 25, "break_min": 5, "reminders": True,
             "nudges": True, "nudge_min": 50,
-            "clip_actions": True, "focus_tracker": True},
+            "clip_actions": True, "focus_tracker": True,
+            "pin": True, "pin_hotkey": ["ctrl", "shift", "P"], "carry": True},
     "startup": {"hud": False, "clipboard": False, "pet": False},
 }
 
