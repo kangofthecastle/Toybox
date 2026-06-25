@@ -258,10 +258,13 @@ class ClipPanel:
         chk = tk.Label(row, text="☑" if text in self._selected else "☐", bg=bg,
                        fg=TEAL if text in self._selected else STAR_OFF,
                        font=("Segoe UI", 10), cursor="hand2")
-        chk.pack(side="left", padx=(2, 2))
+        chk.pack(side="left", padx=(2, 0))
         chk.bind("<Button-1>", lambda e, i=index, t=text: self._on_check(i, t, e))
+        star = tk.Label(row, text="☆", bg=bg, fg=STAR_OFF, width=2,
+                        font=("Segoe UI", 10), cursor="hand2")
+        star.pack(side="left")
+        star.bind("<Button-1>", lambda e, t=text: self._favorite(t))
         self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
-        self._icon_btn(row, "☆", STAR_OFF, bg, lambda t=text: self._favorite(t))
         self._meta_labels(row, entry, bg)
 
     def _fav_row(self, entry, now):
