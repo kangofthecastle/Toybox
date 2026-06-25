@@ -12,7 +12,8 @@ DEFAULTS = {
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
             "smoothing": 0.4, "idle_fps": 8, "active_fps": 30, "zoom": 4,
             "petting": True, "catnap": True, "greeter": True,
-            "nap_after_s": 120, "away_after_s": 300},
+            "nap_after_s": 120, "away_after_s": 300,
+            "focus_min": 25, "break_min": 5, "reminders": True},
     "startup": {"hud": False, "clipboard": False, "pet": False},
 }
 

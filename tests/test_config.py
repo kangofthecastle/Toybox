@@ -138,6 +138,15 @@ class TestConfig(unittest.TestCase):
             self.assertIsInstance(pet[key], int)
             self.assertNotIsInstance(pet[key], bool)
 
+    def test_phase3_focus_reminder_defaults_present(self):
+        pet = config.defaults()["pet"]
+        for key in ("focus_min", "break_min"):
+            self.assertIn(key, pet)
+            self.assertIsInstance(pet[key], int)
+            self.assertNotIsInstance(pet[key], bool)
+        self.assertIn("reminders", pet)
+        self.assertIsInstance(pet["reminders"], bool)
+
 
 if __name__ == "__main__":
     unittest.main()
