@@ -1,11 +1,12 @@
 """Floating Clipboard manager.
 
 A small, static, draggable clipboard icon (drawn in the pet's teal art style)
-floats on screen. Left-click it (or press Ctrl+Shift+V) to open a two-column
+floats on screen. Right-click it (or press Ctrl+Shift+V) to open a two-column
 panel: ALL (recent copies, in-memory) and FAVORITES (kept items, persisted to
 favorites.json). Click a row's text to copy it and close. Star moves an item
 between columns. Check rows in ALL (shift-click for ranges) to bulk-remove.
-Right-click the icon for a utility menu. Pure Python 3.12 stdlib.
+Left-drag the icon to move it. The panel header holds the capture toggle,
+search, and a ≡ menu (clear history, run at login, hide, quit). Pure stdlib.
 """
 import os, sys, traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -90,6 +91,7 @@ class ClipPanel:
         self._selected = set()   # texts checked in ALL
         self._anchor = None      # index in the current ALL view (for shift-select)
         self._all_texts = []     # texts currently shown in ALL (view order)
+        self._suppress_close = False  # set while the options menu is open
 
         win = tk.Toplevel(app.root)
         self.win = win
@@ -139,6 +141,13 @@ class ClipPanel:
         close.bind("<Button-1>", lambda e: self.close())
         close.bind("<Enter>", lambda e: close.config(fg=DEL_HOVER))
         close.bind("<Leave>", lambda e: close.config(fg=DIM))
+
+        burger = tk.Label(hdr, text="≡", bg=PANEL_BG, fg=DIM,
+                          font=("Segoe UI", 13), cursor="hand2")
+        burger.pack(side="right", padx=(0, 8))
+        burger.bind("<Button-1>", lambda e: self._open_options(burger))
+        burger.bind("<Enter>", lambda e: burger.config(fg=FG))
+        burger.bind("<Leave>", lambda e: burger.config(fg=DIM))
 
         self.search_var = tk.StringVar()
         self.search = tk.Entry(hdr, textvariable=self.search_var, bg=ENTRY_BG,
@@ -324,7 +333,31 @@ class ClipPanel:
         self.app.save_cfg()
         self._render_capture()
 
+    def _open_options(self, widget):
+        app = self.app
+        self._suppress_close = True
+        m = tk.Menu(self.win, tearoff=0)
+        m.add_command(label="Clear history (All)", command=app._clear_history)
+        m.add_separator()
+        enabled = startup.is_run_at_startup("Toybox_clipboard")
+        m.add_command(label="✓ Run at login" if enabled else "Run at login",
+                      command=app._toggle_startup)
+        m.add_separator()
+        m.add_command(label="Hide icon", command=lambda: (self.close(), app.root.withdraw()))
+        m.add_command(label="Quit", command=app.root.destroy)
+        try:
+            m.tk_popup(widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height())
+        finally:
+            try:
+                m.grab_release()
+                if self.win.winfo_exists():
+                    self.win.after(200, lambda: setattr(self, "_suppress_close", False))
+            except tk.TclError:
+                pass
+
     def _on_focus_out(self, event):
+        if self._suppress_close:
+            return
         try:
             if self.win.focus_get() is None:
                 self.close()
@@ -366,10 +399,8 @@ class ClipboardApp:
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
-        self.canvas.bind("<Button-3>", self._menu)
+        self.canvas.bind("<Button-3>", lambda e: self.open_panel())  # right-click opens panel
         self.canvas.configure(cursor="hand2")
-
-        self.menu = tk.Menu(root, tearoff=0)
 
         # clipboard capture
         try:
@@ -425,8 +456,7 @@ class ClipboardApp:
             self.cfg["clipboard"]["x"] = self.root.winfo_x()
             self.cfg["clipboard"]["y"] = self.root.winfo_y()
             self.save_cfg()
-        else:
-            self.toggle_panel()
+        # a plain left-click does nothing; right-click opens the panel
 
     # -- panel ------------------------------------------------------------
     def toggle_panel(self):
@@ -440,26 +470,7 @@ class ClipboardApp:
             self.panel.close()
         self.panel = ClipPanel(self)
 
-    # -- right-click menu -------------------------------------------------
-    def _menu(self, e):
-        m = self.menu
-        m.delete(0, "end")
-        on = bool(self.cfg["clipboard"]["capture"])
-        m.add_command(label="Pause capture" if on else "Resume capture",
-                      command=self._toggle_capture)
-        m.add_command(label="Clear history", command=self._clear_history)
-        m.add_separator()
-        enabled = startup.is_run_at_startup("Toybox_clipboard")
-        m.add_command(label=("✓ Run at login" if enabled else "Run at login"),
-                      command=self._toggle_startup)
-        m.add_separator()
-        m.add_command(label="Hide icon", command=self.root.withdraw)
-        m.add_command(label="Quit", command=self.root.destroy)
-        try:
-            m.tk_popup(e.x_root, e.y_root)
-        finally:
-            m.grab_release()
-
+    # -- utility actions (invoked from the panel's menu) ------------------
     def _toggle_capture(self):
         self.cfg["clipboard"]["capture"] = not self.cfg["clipboard"]["capture"]
         self.save_cfg()
