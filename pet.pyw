@@ -30,6 +30,12 @@ import petkit.glow as glow
 import petkit.reactions as reactions
 import petkit.greeter as greeter
 import petkit.bubble as bubble
+import petkit.pomodoro as pomodoro
+import petkit.reminders as reminders
+import petkit.nudges as nudges
+import petkit.clip_actions as clip_actions
+import petkit.focus_tracker as focus_tracker
+import winkit.apps as apps
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets", "cat")
@@ -122,6 +128,19 @@ class Cat:
         self._purred = False          # one-shot edge for the "purr~" bubble
         self._next_zzz = 0.0
 
+        # Phase 3 "assistant": focus/Pomodoro timer + natural-language reminders.
+        self.pomodoro = pomodoro.Pomodoro(focus_s=int(pet.get("focus_min", 25)) * 60,
+                                          break_s=int(pet.get("break_min", 5)) * 60)
+        self.reminders = reminders.Reminders(os.path.join(HERE, "reminders.json"))
+        self._next_reminder_check = 0.0   # low-rate reminder cursor (monotonic)
+
+        # Phase 3 "assistant" (cont.): activity-gated break nudges, read-only
+        # clipboard quick-actions, and a per-app foreground-focus tally.
+        self.nudger = nudges.NudgeScheduler(interval_s=int(pet.get("nudge_min", 50)) * 60)
+        self.tally = focus_tracker.FocusTally()
+        self._clip_seq = wkinput.clipboard_sequence()
+        self._next_focus_sample = 0.0     # low-rate focus-sample cursor (monotonic)
+
         self._drag_dx = self._drag_dy = 0
         self._moved = False
         canvas.configure(cursor="fleur")
@@ -186,18 +205,54 @@ class Cat:
         if key == "catnap":
             self.nap.reset()          # clear any stale internal nap state
             self.nap_state = "awake"
+        if key == "clip_actions" and self.cfg["pet"][key]:
+            # Re-baseline so re-enabling doesn't re-bubble the current clipboard.
+            self._clip_seq = wkinput.clipboard_sequence()
         try:
             config.save(CFG_PATH, self.cfg)
         except Exception:
             pass
 
     def _on_right_click(self, event):
+        pet = self.cfg["pet"]
+        now = time.monotonic()
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="\U0001F431 Cat", state="disabled")
         m.add_separator()
+        # Focus / Pomodoro: start when idle, else pause/resume + stop.
+        st = self.pomodoro.state
+        if st == "idle":
+            m.add_command(label="Focus %d min" % int(pet.get("focus_min", 25)),
+                          command=self._start_focus)
+        else:
+            mm, ss = divmod(int(max(0, self.pomodoro.remaining(now))), 60)
+            if st == "paused":
+                m.add_command(label="Resume (%d:%02d)" % (mm, ss),
+                              command=self._resume_focus)
+            else:
+                m.add_command(label="Pause (%d:%02d left)" % (mm, ss),
+                              command=self._pause_focus)
+            m.add_command(label="Stop focus", command=self._stop_focus)
+        # Reminders: add, plus a list/cancel submenu of pending ones.
+        m.add_command(label="Add reminder…", command=self._add_reminder_dialog)
+        pending = self.reminders.pending()
+        if pending:
+            sub = tk.Menu(m, tearoff=0)
+            for item in pending[:12]:
+                text = item["text"]
+                label = text if len(text) <= 28 else text[:27] + "…"
+                sub.add_command(label="✕ " + label,
+                                command=lambda t=text: self._cancel_reminder(t))
+            m.add_cascade(label="Reminders (%d)" % len(pending), menu=sub)
+        m.add_command(label="Today's apps…", command=self._show_top_apps)
+        m.add_separator()
         for key, label in (("petting", "Petting & purr"),
                            ("catnap", "Box catnap"),
-                           ("greeter", "Welcome-back greeting")):
+                           ("greeter", "Welcome-back greeting"),
+                           ("reminders", "Reminders"),
+                           ("nudges", "Break nudges"),
+                           ("clip_actions", "Clipboard helper"),
+                           ("focus_tracker", "Track app focus")):
             m.add_checkbutton(label=label, onvalue=1, offvalue=0,
                               variable=self._menu_var(key),
                               command=lambda k=key: self._toggle_cfg(k))
@@ -207,6 +262,84 @@ class Cat:
             m.tk_popup(event.x_root, event.y_root)
         finally:
             m.grab_release()
+
+    # --- focus timer + reminders (Phase 3) ------------------------------
+    def _start_focus(self):
+        self.pomodoro.start(time.monotonic())
+        self.bubble.say("Focus on \U0001F43E", secs=2)
+
+    def _pause_focus(self):
+        self.pomodoro.pause(time.monotonic())
+        self.bubble.say("Paused", secs=2)
+
+    def _resume_focus(self):
+        self.pomodoro.resume(time.monotonic())
+        self.bubble.say("Resumed \U0001F43E", secs=2)
+
+    def _stop_focus(self):
+        self.pomodoro.cancel()
+
+    def _cancel_reminder(self, text):
+        self.reminders.cancel(text)
+        self.bubble.say("Reminder cleared", secs=2)
+
+    def _add_reminder_dialog(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Add reminder")
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+        try:
+            dlg.geometry("+%d+%d" % (self.root.winfo_rootx(),
+                                     max(0, self.root.winfo_rooty() - 40)))
+        except tk.TclError:
+            pass
+        tk.Label(dlg, text="Remind me… (e.g. “drink water in 20m”)"
+                 ).pack(padx=10, pady=(10, 4))
+        entry = tk.Entry(dlg, width=36)
+        entry.pack(padx=10, pady=4)
+        entry.focus_set()
+
+        def submit(_event=None):
+            text = entry.get()
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+            parsed = reminders.parse_reminder(text, time.time())
+            if parsed:
+                self.reminders.add(*parsed)
+                self.bubble.say("Reminder set \U0001F43E", secs=2)
+            else:
+                self.bubble.say("Couldn't read a time \U0001F63F", secs=3)
+
+        def cancel(_event=None):
+            try:
+                dlg.destroy()
+            except tk.TclError:
+                pass
+
+        tk.Button(dlg, text="OK", command=submit).pack(pady=(4, 10))
+        dlg.bind("<Return>", submit)
+        dlg.bind("<Escape>", cancel)
+
+    # --- nudges + clipboard helper + focus tracker (Phase 3) ------------
+    def _show_clip_action(self, act):
+        """Passively bubble a clipboard quick-action result (no auto-open)."""
+        kind = act.get("kind")
+        if kind == "math":
+            self.bubble.say("= " + act["result"], secs=4)
+        elif kind == "url":
+            self.bubble.say("open link? \U0001F517", secs=4)
+        elif kind == "color":
+            self.bubble.say("\U0001F3A8 " + act["hex"], secs=4)
+
+    def _show_top_apps(self):
+        top = self.tally.top(3, now=time.monotonic())
+        if not top:
+            self.bubble.say("No app data yet", secs=3)
+            return
+        parts = ["%s %dm" % (app, int(secs) // 60) for app, secs in top]
+        self.bubble.say(" · ".join(parts), secs=5)
 
     # --- per-frame ------------------------------------------------------
     def _hop_offset(self, now):
@@ -380,6 +513,42 @@ class Cat:
             self.bubble.say("Zzz", secs=2)
             self._next_zzz = now + 6.0
 
+        # Focus/Pomodoro timer (runs regardless of nap; injected monotonic clock).
+        ev = self.pomodoro.update(now)
+        if ev == "focus_done":
+            self.bubble.say("Break time! \U0001F43E", secs=4, chime=True)
+        elif ev == "break_done":
+            self.bubble.say("Back to it? \U0001F431", secs=4, chime=True)
+
+        # Reminders, low-rate (<=1/5s); fired reminders use wall-clock epoch.
+        if pet.get("reminders", True) and now >= self._next_reminder_check:
+            self._next_reminder_check = now + 5.0
+            for text in self.reminders.due(time.time()):
+                self.bubble.say("⏰ " + text, secs=5, chime=True)
+
+        # Break nudges: reuse the `idle` already probed above for the nap cycle.
+        if pet.get("nudges", True) and self.nudger.update(idle, now):
+            self.bubble.say("Stretch break? \U0001F431", secs=4, chime=True)
+
+        # Clipboard quick-actions (read-only): ride the clipboard sequence number,
+        # so this costs nothing until the clipboard actually changes.
+        if pet.get("clip_actions", True):
+            seq = wkinput.clipboard_sequence()
+            if seq != self._clip_seq:
+                self._clip_seq = seq
+                try:
+                    txt = self.root.clipboard_get()
+                except tk.TclError:
+                    txt = ""
+                act = clip_actions.analyze(txt)
+                if act:
+                    self._show_clip_action(act)
+
+        # App-focus tally, low-rate (~1/3s): one O(1) foreground-window probe.
+        if pet.get("focus_tracker", True) and now >= self._next_focus_sample:
+            self._next_focus_sample = now + 3.0
+            self.tally.sample(apps.foreground_app_name(), now)
+
         try:
             self.draw(now)
         except tk.TclError:
@@ -388,6 +557,9 @@ class Cat:
         if napping:
             fps = NAP_FPS                         # throttle the tick -- a CPU win
         else:
+            # A running focus timer does NOT pin active fps: pomodoro.update()
+            # still runs every idle tick (~8 fps), so the end-of-phase chime
+            # lands within ~125 ms -- not worth 30 fps for a 25-min stretch.
             active = ((now - self.last_loud) < IDLE_AFTER_S
                       or self.hop_t is not None
                       or now < self.blink_until

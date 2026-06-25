@@ -195,5 +195,13 @@ class TestTrayConstruct(unittest.TestCase):
             tray.close()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestApps(unittest.TestCase):
+    def test_foreground_app_name_is_str(self):
+        import winkit.apps as A
+        name = A.foreground_app_name()
+        self.assertIsInstance(name, str)
+
+
 if __name__ == "__main__":
     unittest.main()
