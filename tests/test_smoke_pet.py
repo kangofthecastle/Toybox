@@ -67,5 +67,33 @@ class TestPetPhase3FocusReminders(unittest.TestCase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestPetPhase3NudgeClipFocus(unittest.TestCase):
+    def test_cat_has_nudge_clip_focus_objects_and_ticks(self):
+        import tkinter as tk
+        import winkit.window as window
+        import config
+        import pet as petmod
+
+        window.enable_dpi_awareness()
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.configure(bg=window.KEY_COLOR)
+        root.geometry("%dx%d+100+100" % (petmod.WIN, petmod.WIN))
+        canvas = tk.Canvas(root, width=petmod.WIN, height=petmod.WIN,
+                           bg=window.KEY_COLOR, highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+        root.update()
+        try:
+            cat = petmod.Cat(root, canvas, config.defaults())
+            self.assertTrue(hasattr(cat, "nudger"))
+            self.assertTrue(hasattr(cat, "tally"))
+            cat.tick()                # one tick must run nudge/clip/focus paths
+            cat._show_top_apps()      # must not crash with no app data yet
+            cat.close()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
