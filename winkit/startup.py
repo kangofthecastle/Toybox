@@ -14,10 +14,21 @@ _kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCW
 _kernel32.OpenMutexW.restype = wintypes.HANDLE
 _kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
 _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.CreateEventW.restype = wintypes.HANDLE
+_kernel32.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.OpenEventW.restype = wintypes.HANDLE
+_kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+_kernel32.ResetEvent.argtypes = [wintypes.HANDLE]
+_kernel32.WaitForSingleObject.restype = wintypes.DWORD
+_kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
 
 _ERROR_ALREADY_EXISTS = 183
 _SYNCHRONIZE = 0x00100000
-_held_mutexes = []  # keep handles alive for the life of the process
+_EVENT_MODIFY_STATE = 0x0002
+_WAIT_OBJECT_0 = 0x00000000
+_held_handles = []  # keep handles (mutexes, events) alive for the life of the process
+_held_mutexes = _held_handles  # backwards-compatible alias
 
 
 def acquire_single_instance(name):
@@ -41,6 +52,59 @@ def is_instance_running(name):
         _kernel32.CloseHandle(handle)
         return True
     return False
+
+
+# --- cross-instance quit signal (named manual-reset event) ----------------
+# A toy can't be stopped just by the process handle the launcher happens to
+# hold: toys started at login (or by a previous launcher) are orphans the
+# launcher never owned. So each toy creates a named quit event and polls it;
+# the launcher (or anyone) can signal that event by name to ask it to exit.
+
+def create_quit_event(name):
+    """Create this instance's quit event and return a handle to poll with
+    quit_requested(). Reset to non-signalled even if the name pre-existed.
+    Returns None on failure (the toy then simply has no remote-quit channel)."""
+    handle = _kernel32.CreateEventW(None, True, False, "Local\\" + name + "_quit")
+    if not handle:
+        return None
+    _kernel32.ResetEvent(handle)        # guard against a stale signalled state
+    _held_handles.append(handle)        # keep alive for the life of the process
+    return handle
+
+
+def quit_requested(handle):
+    """True once some process has called signal_quit() for this event."""
+    if not handle:
+        return False
+    return _kernel32.WaitForSingleObject(handle, 0) == _WAIT_OBJECT_0
+
+
+def signal_quit(name):
+    """Ask the instance identified by `name` to quit (set its quit event).
+    Returns True if a listening instance was found and signalled, else False."""
+    handle = _kernel32.OpenEventW(_EVENT_MODIFY_STATE, False, "Local\\" + name + "_quit")
+    if not handle:
+        return False
+    _kernel32.SetEvent(handle)
+    _kernel32.CloseHandle(handle)
+    return True
+
+
+def watch_for_quit(name, schedule, on_quit, interval_ms=400):
+    """Register this instance's quit event and poll it via `schedule` (a
+    callable like Tk's root.after: schedule(ms, callback)). When another
+    process signals the quit, call on_quit() (e.g. root.destroy). tk-agnostic
+    so it stays unit-testable. Returns the event handle."""
+    handle = create_quit_event(name)
+
+    def _poll():
+        if quit_requested(handle):
+            on_quit()
+        else:
+            schedule(interval_ms, _poll)
+
+    schedule(interval_ms, _poll)
+    return handle
 
 
 def guard_streams():

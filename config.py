@@ -10,7 +10,7 @@ DEFAULTS = {
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True},
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
-            "smoothing": 0.4, "idle_fps": 8, "active_fps": 30},
+            "smoothing": 0.4, "idle_fps": 8, "active_fps": 30, "zoom": 4},
     "startup": {"hud": False, "clipboard": False, "pet": False},
 }
 
