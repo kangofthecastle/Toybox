@@ -10,7 +10,9 @@ DEFAULTS = {
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True},
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
-            "smoothing": 0.4, "idle_fps": 8, "active_fps": 30, "zoom": 4},
+            "smoothing": 0.4, "idle_fps": 8, "active_fps": 30, "zoom": 4,
+            "petting": True, "catnap": True, "greeter": True,
+            "nap_after_s": 120, "away_after_s": 300},
     "startup": {"hud": False, "clipboard": False, "pet": False},
 }
 

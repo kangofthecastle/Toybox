@@ -128,6 +128,16 @@ class TestConfig(unittest.TestCase):
         self.assertIs(cfg["hud"]["locked"], True)
         self.assertEqual(cfg["pet"]["x"], 5)
 
+    def test_phase2_pet_defaults_present(self):
+        pet = config.defaults()["pet"]
+        for key in ("petting", "catnap", "greeter"):
+            self.assertIn(key, pet)
+            self.assertIsInstance(pet[key], bool)
+        for key in ("nap_after_s", "away_after_s"):
+            self.assertIn(key, pet)
+            self.assertIsInstance(pet[key], int)
+            self.assertNotIsInstance(pet[key], bool)
+
 
 if __name__ == "__main__":
     unittest.main()
