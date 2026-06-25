@@ -31,7 +31,10 @@ def _parse_clock(low, now_epoch):
         h = 0
     lt = list(time.localtime(now_epoch))
     lt[3], lt[4], lt[5] = h, mnt, 0
-    due = time.mktime(time.struct_time(tuple(lt)))
+    try:
+        due = time.mktime(time.struct_time(tuple(lt)))
+    except (OverflowError, ValueError):
+        return None      # e.g. a pre-1970 local time on Windows -> unrepresentable
     if due <= now_epoch:
         due += 86400
     return due

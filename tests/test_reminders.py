@@ -35,6 +35,14 @@ class TestParse(unittest.TestCase):
     def test_no_time_phrase_returns_none(self):
         self.assertIsNone(parse_reminder("just some text", now_epoch=0))
 
+    def test_absolute_clock_tiny_epoch_does_not_raise(self):
+        # mktime can overflow for a pre-1970 local time (Windows); the documented
+        # "never raises" contract must hold -- return None instead.
+        try:
+            parse_reminder("call mom at 3pm", now_epoch=0)
+        except Exception as exc:                       # noqa: BLE001
+            self.fail("parse_reminder raised %r" % exc)
+
 
 class TestStore(unittest.TestCase):
     def setUp(self):

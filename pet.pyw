@@ -205,6 +205,9 @@ class Cat:
         if key == "catnap":
             self.nap.reset()          # clear any stale internal nap state
             self.nap_state = "awake"
+        if key == "clip_actions" and self.cfg["pet"][key]:
+            # Re-baseline so re-enabling doesn't re-bubble the current clipboard.
+            self._clip_seq = wkinput.clipboard_sequence()
         try:
             config.save(CFG_PATH, self.cfg)
         except Exception:
@@ -212,17 +215,35 @@ class Cat:
 
     def _on_right_click(self, event):
         pet = self.cfg["pet"]
+        now = time.monotonic()
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="\U0001F431 Cat", state="disabled")
         m.add_separator()
-        if self.pomodoro.state == "idle":
+        # Focus / Pomodoro: start when idle, else pause/resume + stop.
+        st = self.pomodoro.state
+        if st == "idle":
             m.add_command(label="Focus %d min" % int(pet.get("focus_min", 25)),
                           command=self._start_focus)
         else:
-            left = int(self.pomodoro.remaining(time.monotonic()))
-            m.add_command(label="Stop focus (%d:%02d left)" % divmod(left, 60),
-                          command=self._stop_focus)
+            mm, ss = divmod(int(max(0, self.pomodoro.remaining(now))), 60)
+            if st == "paused":
+                m.add_command(label="Resume (%d:%02d)" % (mm, ss),
+                              command=self._resume_focus)
+            else:
+                m.add_command(label="Pause (%d:%02d left)" % (mm, ss),
+                              command=self._pause_focus)
+            m.add_command(label="Stop focus", command=self._stop_focus)
+        # Reminders: add, plus a list/cancel submenu of pending ones.
         m.add_command(label="Add reminder…", command=self._add_reminder_dialog)
+        pending = self.reminders.pending()
+        if pending:
+            sub = tk.Menu(m, tearoff=0)
+            for item in pending[:12]:
+                text = item["text"]
+                label = text if len(text) <= 28 else text[:27] + "…"
+                sub.add_command(label="✕ " + label,
+                                command=lambda t=text: self._cancel_reminder(t))
+            m.add_cascade(label="Reminders (%d)" % len(pending), menu=sub)
         m.add_command(label="Today's apps…", command=self._show_top_apps)
         m.add_separator()
         for key, label in (("petting", "Petting & purr"),
@@ -247,8 +268,20 @@ class Cat:
         self.pomodoro.start(time.monotonic())
         self.bubble.say("Focus on \U0001F43E", secs=2)
 
+    def _pause_focus(self):
+        self.pomodoro.pause(time.monotonic())
+        self.bubble.say("Paused", secs=2)
+
+    def _resume_focus(self):
+        self.pomodoro.resume(time.monotonic())
+        self.bubble.say("Resumed \U0001F43E", secs=2)
+
     def _stop_focus(self):
         self.pomodoro.cancel()
+
+    def _cancel_reminder(self, text):
+        self.reminders.cancel(text)
+        self.bubble.say("Reminder cleared", secs=2)
 
     def _add_reminder_dialog(self):
         dlg = tk.Toplevel(self.root)
@@ -524,11 +557,13 @@ class Cat:
         if napping:
             fps = NAP_FPS                         # throttle the tick -- a CPU win
         else:
+            # A running focus timer does NOT pin active fps: pomodoro.update()
+            # still runs every idle tick (~8 fps), so the end-of-phase chime
+            # lands within ~125 ms -- not worth 30 fps for a 25-min stretch.
             active = ((now - self.last_loud) < IDLE_AFTER_S
                       or self.hop_t is not None
                       or now < self.blink_until
-                      or (now - self._last_cursor_move) < CURSOR_ACTIVE_S
-                      or self.pomodoro.state in ("focus", "break"))
+                      or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
             fps = self.active_fps if active else self.idle_fps
         self.root.after(max(1, int(round(1000.0 / fps))), self.tick)
 
