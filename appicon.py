@@ -1,116 +1,114 @@
 """Generate the Toybox app/tray icon as a real .ico file, pure stdlib.
 
-Draws a cute teal mascot face (a sibling of the desktop pet) at 4x supersample,
-box-downscales to 32x32 RGBA for clean edges, and encodes a 32-bpp BMP-based
-.ico (universally loadable via LoadImageW). No third-party imports.
+Draws a WHITE, outline-style game controller (matching the monochrome line-art
+of the Windows notification-area icons): a hollow gamepad body with two grips, a
+d-pad and two face buttons. White strokes, transparent fill. Rendered at 4x
+supersample for clean edges, box-downscaled to 32x32 RGBA (pure white with a
+coverage alpha), then encoded as a 32-bpp BMP-based .ico. No third-party imports.
 """
+import math
 import os
 import struct
 import tempfile
 import zlib
 
 SIZE = 32
-SS = 4                # supersample factor
-W = SIZE * SS         # working canvas edge (128)
-
-# Palette (RGBA).
-TEAL = (74, 196, 196, 255)       # toolbox body
-TEAL_LT = (124, 218, 218, 255)   # lid highlight
-TEAL_DK = (44, 150, 150, 255)
-DARK = (26, 60, 60, 255)         # rim, handle, seam
-ACCENT = (255, 201, 84, 255)     # latch / clasps
-ACCENT_DK = (196, 146, 40, 255)
-_BG = (74, 196, 196, 0)          # teal w/ 0 alpha so edges blend to teal, not black
+SS = 4                 # supersample factor
+W = SIZE * SS          # working canvas edge (128)
+STROKE = 2.0           # stroke width in 32-space px
 
 
-def _blend(buf, x, y, color):
-    if x < 0 or y < 0 or x >= W or y >= W:
-        return
-    r, g, b, a = color
-    if a == 0:
-        return
-    i = (y * W + x) * 4
-    ia = 255 - a
-    buf[i] = (r * a + buf[i] * ia) // 255
-    buf[i + 1] = (g * a + buf[i + 1] * ia) // 255
-    buf[i + 2] = (b * a + buf[i + 2] * ia) // 255
-    buf[i + 3] = min(255, a + buf[i + 3] * ia // 255)
+def _stamp(ink, cx, cy, r, val=255):
+    """Paint a filled disc of `val` into the single-channel ink buffer.
 
-
-def _disc(buf, cx, cy, r, color):
-    cx *= SS
-    cy *= SS
-    r *= SS
+    val=255 lays down ink (white); val=0 erases it (used to knock the hollow
+    interior and the d-pad/button cuts out of a filled silhouette)."""
     r2 = r * r
-    for y in range(int(cy - r), int(cy + r) + 1):
-        for x in range(int(cx - r), int(cx + r) + 1):
-            dx, dy = x - cx, y - cy
+    x0 = max(0, int(cx - r))
+    x1 = min(W - 1, int(cx + r) + 1)
+    y0 = max(0, int(cy - r))
+    y1 = min(W - 1, int(cy + r) + 1)
+    for y in range(y0, y1 + 1):
+        dy = y - cy
+        for x in range(x0, x1 + 1):
+            dx = x - cx
             if dx * dx + dy * dy <= r2:
-                _blend(buf, x, y, color)
+                ink[y * W + x] = val
 
 
-def _rect(buf, x0, y0, x1, y1, color):
-    for y in range(int(round(y0 * SS)), int(round(y1 * SS))):
-        for x in range(int(round(x0 * SS)), int(round(x1 * SS))):
-            _blend(buf, x, y, color)
+def _disc(ink, cx, cy, r, val=255):
+    """Filled disc in 32-space coordinates."""
+    _stamp(ink, cx * SS, cy * SS, r * SS, val)
 
 
-def _rrect(buf, x0, y0, x1, y1, r, color):
-    _rect(buf, x0 + r, y0, x1 - r, y1, color)
-    _rect(buf, x0, y0 + r, x1, y1 - r, color)
-    _disc(buf, x0 + r, y0 + r, r, color)
-    _disc(buf, x1 - r, y0 + r, r, color)
-    _disc(buf, x0 + r, y1 - r, r, color)
-    _disc(buf, x1 - r, y1 - r, r, color)
+def _line(ink, x0, y0, x1, y1, t=STROKE):
+    x0 *= SS; y0 *= SS; x1 *= SS; y1 *= SS
+    r = t * SS / 2.0
+    n = max(1, int(math.hypot(x1 - x0, y1 - y0)))
+    for k in range(n + 1):
+        _stamp(ink, x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n, r)
+
+
+def _arc(ink, cx, cy, rad, a0, a1, t=STROKE):
+    cx *= SS; cy *= SS; rad *= SS
+    r = t * SS / 2.0
+    n = max(2, int(abs(a1 - a0) * 2))
+    for k in range(n + 1):
+        a = math.radians(a0 + (a1 - a0) * k / n)
+        _stamp(ink, cx + rad * math.cos(a), cy - rad * math.sin(a), r)
+
+
+def _fill_rrect(ink, x0, y0, x1, y1, r, val=255):
+    """Filled rounded rectangle in 32-space coordinates."""
+    X0 = x0 * SS; Y0 = y0 * SS; X1 = x1 * SS; Y1 = y1 * SS; R = r * SS
+    for y in range(max(0, int(Y0)), min(W, int(Y1) + 1)):
+        for x in range(max(0, int(X0)), min(W, int(X1) + 1)):
+            dx = dy = 0.0
+            if x < X0 + R: dx = X0 + R - x
+            elif x > X1 - R: dx = x - (X1 - R)
+            if y < Y0 + R: dy = Y0 + R - y
+            elif y > Y1 - R: dy = y - (Y1 - R)
+            if dx * dx + dy * dy <= R * R:
+                ink[y * W + x] = val
+
+
+def _dpad(ink, cx, cy, val, arm=2.3, half=0.8):
+    """A plus/cross (the directional pad), drawn or erased per `val`."""
+    _fill_rrect(ink, cx - half, cy - arm, cx + half, cy + arm, 0.2, val)
+    _fill_rrect(ink, cx - arm, cy - half, cx + arm, cy + half, 0.2, val)
 
 
 def _render_rgba():
-    """Draw the mascot at supersample, then box-downscale to SIZE x SIZE RGBA."""
-    buf = bytearray()
-    for _ in range(W * W):
-        buf += bytes(_BG)
+    """Draw the white outline game controller, downscale coverage -> alpha."""
+    ink = bytearray(W * W)
 
-    # Handle: a dark "staple" arching over the top.
-    _rrect(buf, 10.5, 6.0, 21.5, 8.4, 1.0, DARK)
-    _rect(buf, 11.0, 7.5, 13.3, 11.6, DARK)
-    _rect(buf, 18.7, 7.5, 21.0, 11.6, DARK)
+    # Solid gamepad silhouette: rounded body + two grips bulging down.
+    _fill_rrect(ink, 4.0, 10.0, 28.0, 20.5, 4.2)
+    _disc(ink, 8.6, 19.6, 4.8)
+    _disc(ink, 23.4, 19.6, 4.8)
+    # Hollow it out, leaving a ~2px outline ring (matches the line-art tray icons).
+    _fill_rrect(ink, 6.3, 12.2, 25.7, 18.0, 2.8, val=0)
+    _disc(ink, 8.6, 18.8, 2.7, val=0)
+    _disc(ink, 23.4, 18.8, 2.7, val=0)
+    # Controls inside the hollow: d-pad (left) + two face buttons (right).
+    _dpad(ink, 10.0, 14.8, val=255)
+    _disc(ink, 21.0, 13.8, 1.4)
+    _disc(ink, 23.8, 16.4, 1.4)
 
-    # Box: dark rim, then teal body.
-    _rrect(buf, 3.5, 10.5, 28.5, 27.5, 3.5, DARK)
-    _rrect(buf, 4.3, 11.3, 27.7, 26.7, 3.0, TEAL)
-
-    # Lid highlight band + seam line (the lid opening).
-    _rect(buf, 6.0, 12.2, 26.0, 15.3, TEAL_LT)
-    _rect(buf, 5.0, 15.6, 27.0, 16.8, DARK)
-
-    # Clasps on the seam.
-    for cx in (9.0, 23.0):
-        _disc(buf, cx, 16.2, 1.6, DARK)
-        _disc(buf, cx, 16.2, 0.9, ACCENT)
-
-    # Central latch.
-    _rrect(buf, 13.5, 17.6, 18.5, 22.6, 1.0, DARK)
-    _rrect(buf, 14.1, 18.2, 17.9, 22.0, 0.7, ACCENT)
-
-    # Box-average downscale SS x SS -> SIZE x SIZE.
     out = bytearray(SIZE * SIZE * 4)
     area = SS * SS
     for oy in range(SIZE):
         for ox in range(SIZE):
-            r = g = b = a = 0
+            s = 0
             for sy in range(SS):
-                base = ((oy * SS + sy) * W + ox * SS) * 4
+                base = (oy * SS + sy) * W + ox * SS
                 for sx in range(SS):
-                    i = base + sx * 4
-                    r += buf[i]
-                    g += buf[i + 1]
-                    b += buf[i + 2]
-                    a += buf[i + 3]
+                    s += ink[base + sx]
             o = (oy * SIZE + ox) * 4
-            out[o] = r // area
-            out[o + 1] = g // area
-            out[o + 2] = b // area
-            out[o + 3] = a // area
+            out[o] = 255          # B
+            out[o + 1] = 255      # G
+            out[o + 2] = 255      # R (white)
+            out[o + 3] = s // area
     return out
 
 
@@ -122,7 +120,7 @@ def build_ico_bytes():
     for y in range(h - 1, -1, -1):          # bottom-up rows
         for x in range(w):
             i = (y * w + x) * 4
-            xor += bytes((rgba[i + 2], rgba[i + 1], rgba[i], rgba[i + 3]))  # BGRA
+            xor += bytes((rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]))  # already BGRA (white)
     and_stride = ((w + 31) // 32) * 4
     and_mask = b"\x00" * (and_stride * h)   # alpha channel handles transparency
     header = struct.pack("<IiiHHIIiiII", 40, w, h * 2, 1, 32, 0, 0, 0, 0, 0, 0)
@@ -161,7 +159,9 @@ def save_png_preview(path):
     raw = bytearray()
     for y in range(h):
         raw.append(0)
-        raw += rgba[y * w * 4:(y + 1) * w * 4]
+        for x in range(w):
+            i = (y * w + x) * 4
+            raw += bytes((rgba[i + 2], rgba[i + 1], rgba[i], rgba[i + 3]))  # RGBA for PNG
     png = (b"\x89PNG\r\n\x1a\n"
            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
