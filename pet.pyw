@@ -27,6 +27,9 @@ import config
 import petkit.persona as persona
 import petkit.eyes as eyes
 import petkit.glow as glow
+import petkit.reactions as reactions
+import petkit.greeter as greeter
+import petkit.bubble as bubble
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets", "cat")
@@ -39,6 +42,8 @@ IDLE_AFTER_S = 2.0
 CURSOR_ACTIVE_S = 1.0
 KEY_RGB = (1, 1, 1)            # window.KEY_COLOR "#010101"
 IDLE_FRAME_S = 0.09           # idle animation cadence
+NAP_FRAME_S = 0.5             # box-catnap animation cadence (~2 fps)
+NAP_FPS = 2                   # throttled tick rate while napping (a CPU win)
 
 FUR_COLOR = "#fdd5b5"          # (253,213,181) -- baked sprite fur around the eyes
 EYE_REACH = 60.0              # cursor distance (screen px) for full dot deflection
@@ -101,6 +106,21 @@ class Cat:
         self.blink_until = 0.0
         self.next_blink = self.t0 + random.uniform(BLINK_MIN_S, BLINK_MAX_S)
 
+        # Phase 2 "alive": petting -> purr, box catnap, welcome-back greeter,
+        # all surfaced through a reusable speech bubble.
+        self.nap_sheet = sprites.SpriteSheet(root, os.path.join(ASSETS, "Box3.png"))
+        self.petting = reactions.PettingDetector()
+        self.nap = reactions.NapState(
+            sleep_after_ms=int(pet.get("nap_after_s", 120)) * 1000)
+        self.greeter = greeter.Greeter(
+            away_after_ms=int(pet.get("away_after_s", 300)) * 1000)
+        self.bubble = bubble.Bubble(root)
+        self.nap_state = "awake"
+        self.nap_frame_i = 0
+        self.nap_frame_t = self.t0
+        self._petting_was = False
+        self._next_zzz = 0.0
+
         self._drag_dx = self._drag_dy = 0
         self._moved = False
         canvas.configure(cursor="fleur")
@@ -108,6 +128,8 @@ class Cat:
             w.bind("<ButtonPress-1>", self._on_press)
             w.bind("<B1-Motion>", self._on_drag)
             w.bind("<ButtonRelease-1>", self._on_release)
+            w.bind("<Motion>", self._on_motion)
+            w.bind("<ButtonPress-3>", self._on_right_click)
 
     # --- dragging (unchanged behavior) ----------------------------------
     def _on_press(self, event):
@@ -131,6 +153,54 @@ class Cat:
         except Exception:
             pass
 
+    # --- petting (cursor stroking the cat) ------------------------------
+    def _on_motion(self, event):
+        now = time.monotonic()
+        inside = (abs(event.x - self.cx) < self.sprite_px / 2.0
+                  and (self.base_y - self.sprite_px) < event.y < self.base_y)
+        if self.petting.update(event.x_root, inside, now):
+            if not self._petting_was and self.cfg["pet"].get("petting", True):
+                self.bubble.say("purr~", secs=2)
+            self._petting_was = True
+        else:
+            self._petting_was = False
+
+    # --- right-click menu -----------------------------------------------
+    def _menu_var(self, key):
+        if not hasattr(self, "_menu_vars"):
+            self._menu_vars = {}
+        var = self._menu_vars.get(key)
+        if var is None:
+            var = tk.IntVar(self.root,
+                            value=1 if self.cfg["pet"].get(key, True) else 0)
+            self._menu_vars[key] = var
+        return var
+
+    def _toggle_cfg(self, key):
+        self.cfg["pet"][key] = not self.cfg["pet"].get(key, True)
+        self._menu_var(key).set(1 if self.cfg["pet"][key] else 0)
+        try:
+            config.save(CFG_PATH, self.cfg)
+        except Exception:
+            pass
+
+    def _on_right_click(self, event):
+        m = tk.Menu(self.root, tearoff=0)
+        m.add_command(label="\U0001F431 Cat", state="disabled")
+        m.add_separator()
+        for key, label in (("petting", "Petting & purr"),
+                           ("catnap", "Box catnap"),
+                           ("greeter", "Welcome-back greeting")):
+            m.add_checkbutton(label=label, onvalue=1, offvalue=0,
+                              variable=self._menu_var(key),
+                              command=lambda k=key: self._toggle_cfg(k))
+        m.add_separator()
+        m.add_command(label="Hide cat", command=self.root.destroy)
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
+
     # --- per-frame ------------------------------------------------------
     def _hop_offset(self, now):
         if self.hop_t is None:
@@ -148,11 +218,21 @@ class Cat:
 
     def draw(self, now):
         env = self.envelope
-        # advance the idle animation
-        if now - self.frame_t >= IDLE_FRAME_S:
-            self.frame_i = (self.frame_i + 1) % self.sheet.frame_count
-            self.frame_t = now
-            self.canvas.itemconfig(self.cat_item, image=self.sheet.frame(self.frame_i, self.zoom))
+        napping = self.nap_state == "napping"
+        if napping:
+            # Box catnap: slow-cycle the sleeping-in-a-box sheet (~2 fps) and let
+            # the sprite's own painted face show -- hide the tracked pixel eyes.
+            if now - self.nap_frame_t >= NAP_FRAME_S:
+                self.nap_frame_i = (self.nap_frame_i + 1) % self.nap_sheet.frame_count
+                self.nap_frame_t = now
+            self.canvas.itemconfig(self.cat_item,
+                                   image=self.nap_sheet.frame(self.nap_frame_i, self.zoom))
+        else:
+            # advance the idle animation
+            if now - self.frame_t >= IDLE_FRAME_S:
+                self.frame_i = (self.frame_i + 1) % self.sheet.frame_count
+                self.frame_t = now
+                self.canvas.itemconfig(self.cat_item, image=self.sheet.frame(self.frame_i, self.zoom))
 
         self.wiggle_amp *= 0.85
         sway = math.sin((now - self.t0) * 2.3) * (0.6 + env * 2.0)
@@ -165,11 +245,19 @@ class Cat:
         self.canvas.coords(self.glow_item, cx, feet_y - self.sprite_px / 2.0)
         self.canvas.itemconfig(self.glow_item, image=self.glow.get(self.hue, min(1.0, env * 1.6)))
 
+        if napping:                       # box sprite has its own face -> no eyes
+            for e in self.eyes:
+                self._hide_eye(e)
+            return
+
         # Schedule blinks: when due, shut the eyes for BLINK_DUR_S and pick the
-        # next interval.
+        # next interval. While being petted, hold the eyes shut for a contented
+        # squint (reuses the closed-eye render path).
         if now >= self.next_blink:
             self.blink_until = now + BLINK_DUR_S
             self.next_blink = now + random.uniform(BLINK_MIN_S, BLINK_MAX_S)
+        if self._petting_was:
+            self.blink_until = max(self.blink_until, now + IDLE_FRAME_S)
         self._draw_eyes(cx, feet_y, now)
 
     def _make_eye(self):
@@ -262,16 +350,39 @@ class Cat:
         if r["beat"]:
             self._on_beat()
 
+        # Idle-driven nap cycle + welcome-back greeting (one O(1) Win32 probe).
+        pet = self.cfg["pet"]
+        idle = wkinput.idle_ms()
+        prev_nap = self.nap_state
+        if pet.get("catnap", True):
+            self.nap_state = self.nap.update(idle, now)
+        else:
+            self.nap_state = "awake"
+        if prev_nap == "napping" and self.nap_state == "startled":
+            self._on_beat()                       # jolt awake with a hop
+        if pet.get("greeter", True):
+            g = self.greeter.update(idle)
+            if g:
+                self.bubble.say(g, secs=4, chime=True)
+
+        napping = self.nap_state == "napping"
+        if napping and now >= self._next_zzz:
+            self.bubble.say("Zzz", secs=2)
+            self._next_zzz = now + 6.0
+
         try:
             self.draw(now)
         except tk.TclError:
             return
 
-        active = ((now - self.last_loud) < IDLE_AFTER_S
-                  or self.hop_t is not None
-                  or now < self.blink_until
-                  or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
-        fps = self.active_fps if active else self.idle_fps
+        if napping:
+            fps = NAP_FPS                         # throttle the tick -- a CPU win
+        else:
+            active = ((now - self.last_loud) < IDLE_AFTER_S
+                      or self.hop_t is not None
+                      or now < self.blink_until
+                      or (now - self._last_cursor_move) < CURSOR_ACTIVE_S)
+            fps = self.active_fps if active else self.idle_fps
         self.root.after(max(1, int(round(1000.0 / fps))), self.tick)
 
     def close(self):
