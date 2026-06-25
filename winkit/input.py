@@ -56,6 +56,32 @@ def cursor_pos():
     return (pt.x, pt.y)
 
 
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.GetTickCount.restype = ctypes.c_uint
+_kernel32.GetTickCount.argtypes = []
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+
+_user32.GetLastInputInfo.restype = ctypes.c_int  # BOOL
+_user32.GetLastInputInfo.argtypes = [ctypes.POINTER(_LASTINPUTINFO)]
+
+
+def _idle_ms_from_ticks(last_tick, now_tick):
+    """Milliseconds between two GetTickCount samples, 32-bit-wraparound-safe."""
+    return (now_tick - last_tick) & 0xFFFFFFFF
+
+
+def idle_ms():
+    """Milliseconds since the last system-wide keyboard/mouse input."""
+    info = _LASTINPUTINFO()
+    info.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+    _user32.GetLastInputInfo(ctypes.byref(info))
+    return _idle_ms_from_ticks(info.dwTime, _kernel32.GetTickCount())
+
+
 class HotkeyPoller:
     """Edge-detected hotkey-combo poller driven by tkinter's after() loop.
 

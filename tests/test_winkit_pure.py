@@ -37,5 +37,16 @@ class TestPythonwCommand(unittest.TestCase):
         self.assertIn('"' + os.path.abspath("hud.pyw") + '"', cmd)
 
 
+class TestIdleMath(unittest.TestCase):
+    def test_simple_delta(self):
+        import winkit.input as I
+        self.assertEqual(I._idle_ms_from_ticks(100, 500), 400)
+
+    def test_wraparound(self):
+        import winkit.input as I
+        # GetTickCount is a 32-bit DWORD that wraps every ~49.7 days.
+        self.assertEqual(I._idle_ms_from_ticks(0xFFFFFFF0, 0x0000000F), 0x1F)
+
+
 if __name__ == "__main__":
     unittest.main()
