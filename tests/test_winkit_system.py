@@ -253,5 +253,27 @@ class TestPinHelpers(unittest.TestCase):
         self.assertIsInstance(W.root_window_at(0, 0), int)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestFileDropTarget(unittest.TestCase):
+    def test_install_and_restore(self):
+        import winkit.window as W
+        import winkit.dnd as D
+        W.enable_dpi_awareness()
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.geometry("60x60+0+0")
+        root.update()
+        got = []
+        try:
+            hwnd = W._hwnd_of(root)
+            target = D.FileDropTarget(hwnd, got.append)
+            self.assertNotEqual(target._old_proc, 0)   # captured the original proc
+            target.close()                              # restores without crashing
+            root.update()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
