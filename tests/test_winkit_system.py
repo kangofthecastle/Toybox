@@ -93,6 +93,13 @@ class TestInput(unittest.TestCase):
         self.assertIsInstance(pos[0], int)
         self.assertIsInstance(pos[1], int)
 
+    def test_idle_ms_is_plausible_int(self):
+        import winkit.input as I
+        v = I.idle_ms()
+        self.assertIsInstance(v, int)
+        self.assertGreaterEqual(v, 0)
+        self.assertLess(v, 7 * 24 * 60 * 60 * 1000)  # < a week
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestAudioMeter(unittest.TestCase):
