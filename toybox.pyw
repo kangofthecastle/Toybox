@@ -25,14 +25,19 @@ def _pythonw():
 
 
 def main():
+    if not os.environ.get("TOYBOX_SMOKE") and not startup.acquire_single_instance("Toybox_launcher"):
+        return  # another launcher is already running
     procs = {key: None for key, _title, _script in TOYS}
     script_for = {key: script for key, _title, script in TOYS}
 
     def is_running(key):
-        proc = procs.get(key)
-        return proc is not None and proc.poll() is None
+        # Detect ANY running instance (single-instance mutex), not just ones we
+        # spawned, so the checkmarks are accurate and we never double-spawn.
+        return startup.is_instance_running("Toybox_" + key)
 
     def start(key):
+        if is_running(key):
+            return
         try:
             proc = subprocess.Popen([_pythonw(), os.path.join(HERE, script_for[key])])
             procs[key] = proc

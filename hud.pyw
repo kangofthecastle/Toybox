@@ -182,6 +182,8 @@ class Hud:
 
 
 def main():
+    if not _smoke_ms() and not startup.acquire_single_instance("Toybox_hud"):
+        return  # another HUD is already running
     cfg = config.load(CFG_PATH)
     hud_cfg = cfg["hud"]
 

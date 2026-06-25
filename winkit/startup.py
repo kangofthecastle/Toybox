@@ -1,9 +1,46 @@
 """pythonw stream guard + run-at-startup (HKCU Run) via winreg. See gotchas section 4."""
+import ctypes
+from ctypes import wintypes
 import os
 import sys
 import winreg
 
 RUN_SUBKEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+# --- single-instance guard (named mutex) ---------------------------------
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateMutexW.restype = wintypes.HANDLE
+_kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.OpenMutexW.restype = wintypes.HANDLE
+_kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+_ERROR_ALREADY_EXISTS = 183
+_SYNCHRONIZE = 0x00100000
+_held_mutexes = []  # keep handles alive for the life of the process
+
+
+def acquire_single_instance(name):
+    """Become the sole instance identified by `name`. Returns True if acquired
+    (no other instance is running), False if one already exists. On failure to
+    create the mutex at all, returns True (never block a toy from starting)."""
+    handle = _kernel32.CreateMutexW(None, False, "Local\\" + name)
+    if not handle:
+        return True
+    if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+        _kernel32.CloseHandle(handle)
+        return False
+    _held_mutexes.append(handle)
+    return True
+
+
+def is_instance_running(name):
+    """True if some process currently holds the single-instance mutex `name`."""
+    handle = _kernel32.OpenMutexW(_SYNCHRONIZE, False, "Local\\" + name)
+    if handle:
+        _kernel32.CloseHandle(handle)
+        return True
+    return False
 
 
 def guard_streams():

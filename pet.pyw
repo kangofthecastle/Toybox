@@ -349,6 +349,8 @@ def _place(root, cfg):
 
 
 def main():
+    if not _smoke_ms() and not startup.acquire_single_instance("Toybox_pet"):
+        return  # another pet is already running
     cfg = config.load(CFG_PATH)
 
     window.enable_dpi_awareness()            # BEFORE Tk()

@@ -274,6 +274,8 @@ class ClipboardApp:
 
 
 def main():
+    if not _smoke_ms() and not startup.acquire_single_instance("Toybox_clipboard"):
+        return  # another clipboard watcher is already running
     cfg = config.load(CFG_PATH)
     root = tk.Tk()
     root.withdraw()  # hidden controller; the picker is the only visible UI

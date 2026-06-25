@@ -136,6 +136,16 @@ class TestStartupRegistry(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestSingleInstance(unittest.TestCase):
+    def test_acquire_detect_and_second_is_rejected(self):
+        import winkit.startup as S
+        name = "ToyboxTest__SI__DELETEME"
+        self.assertTrue(S.acquire_single_instance(name))   # first acquires
+        self.assertTrue(S.is_instance_running(name))       # now detectable
+        self.assertFalse(S.acquire_single_instance(name))  # a second is rejected
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestTrayConstruct(unittest.TestCase):
     def test_construct_and_close(self):
         import winkit.tray as T
