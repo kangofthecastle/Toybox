@@ -24,6 +24,9 @@ CB_MESSAGE = WM_USER + 1
 NIM_ADD, NIM_MODIFY, NIM_DELETE, NIM_SETVERSION = 0, 1, 2, 4
 NIF_MESSAGE, NIF_ICON, NIF_TIP = 1, 2, 4
 IDI_APPLICATION = 32512
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x00000010
+LR_DEFAULTSIZE = 0x00000040
 MF_STRING, MF_CHECKED, MF_SEPARATOR, MF_GRAYED = 0x0000, 0x0008, 0x0800, 0x0001
 TPM_RIGHTBUTTON, TPM_RETURNCMD, TPM_NONOTIFY = 0x0002, 0x0100, 0x0080
 NOTIFYICON_VERSION_4 = 4
@@ -72,6 +75,8 @@ _u32.CreateWindowExW.argtypes = [w.DWORD, w.LPCWSTR, w.LPCWSTR, w.DWORD, C.c_int
 _u32.DestroyWindow.argtypes = [w.HWND]
 _u32.LoadIconW.restype = w.HICON
 _u32.LoadIconW.argtypes = [w.HINSTANCE, w.LPCWSTR]
+_u32.LoadImageW.restype = w.HANDLE
+_u32.LoadImageW.argtypes = [w.HINSTANCE, w.LPCWSTR, w.UINT, C.c_int, C.c_int, w.UINT]
 _u32.CreatePopupMenu.restype = w.HMENU
 _u32.AppendMenuW.restype = w.BOOL
 _u32.AppendMenuW.argtypes = [w.HMENU, w.UINT, UINT_PTR, w.LPCWSTR]
@@ -102,7 +107,7 @@ class TrayIcon:
     """tip: tooltip text. menu_provider: () -> list of item dicts, each one of
     {"separator": True} | {"label": str, "callback": callable, "checked": bool}."""
 
-    def __init__(self, tip, menu_provider, class_name="ToyboxTrayWnd"):
+    def __init__(self, tip, menu_provider, class_name="ToyboxTrayWnd", icon_path=None):
         self.menu_provider = menu_provider
         self._cmds = {}
         self._destroyed = False
@@ -122,7 +127,12 @@ class TrayIcon:
         if not self.hwnd:
             raise C.WinError(C.get_last_error())
 
-        self._hicon = _u32.LoadIconW(None, C.cast(C.c_void_p(IDI_APPLICATION), w.LPCWSTR))
+        self._hicon = 0
+        if icon_path and os.path.exists(icon_path):
+            self._hicon = _u32.LoadImageW(None, icon_path, IMAGE_ICON, 0, 0,
+                                          LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        if not self._hicon:  # fall back to the stock application icon
+            self._hicon = _u32.LoadIconW(None, C.cast(C.c_void_p(IDI_APPLICATION), w.LPCWSTR))
         self._nid = _NOTIFYICONDATAW()
         self._nid.cbSize = C.sizeof(_NOTIFYICONDATAW)
         self._nid.hWnd = self.hwnd

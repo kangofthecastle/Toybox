@@ -4,10 +4,12 @@ import winkit.startup as startup
 startup.guard_streams()  # MUST be the first executable statement (pythonw-at-login safety)
 
 import subprocess
+import appicon
 import winkit.tray as tray
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(HERE, "toybox.log")
+ICON_PATH = os.path.join(HERE, "toybox.ico")
 
 # toy key -> (window title, script filename)
 TOYS = (
@@ -101,7 +103,8 @@ def main():
         items.append({"label": "Quit Toybox", "callback": quit_all})
         return items
 
-    the_tray = tray.TrayIcon("Toybox", menu_provider)
+    appicon.ensure_ico(ICON_PATH)  # generate the cute toolbox icon
+    the_tray = tray.TrayIcon("Toybox", menu_provider, icon_path=ICON_PATH)
     the_tray.run()  # blocks; owns the Win32 message loop and TOYBOX_SMOKE auto-quit
 
 

@@ -3,4 +3,5 @@ __pycache__/
 config.json
 favorites.json
 toybox.log
+toybox.ico
 .spike/
