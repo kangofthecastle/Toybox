@@ -77,7 +77,7 @@ class TestConfig(unittest.TestCase):
     def test_wrong_typed_max_items_falls_back_to_int(self):
         self._write({"clipboard": {"max_items": "twenty"}})
         cfg = config.load(self.path)
-        self.assertEqual(cfg["clipboard"]["max_items"], 20)
+        self.assertEqual(cfg["clipboard"]["max_items"], config.DEFAULTS["clipboard"]["max_items"])
         self.assertIsInstance(cfg["clipboard"]["max_items"], int)
 
     def test_alpha_accepts_int_coerced_to_float(self):
@@ -94,7 +94,7 @@ class TestConfig(unittest.TestCase):
     def test_bool_not_accepted_as_int(self):
         self._write({"clipboard": {"max_items": True}})
         cfg = config.load(self.path)
-        self.assertEqual(cfg["clipboard"]["max_items"], 20)
+        self.assertEqual(cfg["clipboard"]["max_items"], config.DEFAULTS["clipboard"]["max_items"])
 
     def test_nullable_xy_accepts_none_and_number(self):
         self._write({"pet": {"x": 300, "y": None}})

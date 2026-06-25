@@ -1,45 +1,64 @@
-"""Clipboard History + hotkey picker (Toybox Task 9).
+"""Floating Clipboard manager.
 
-A hidden tk controller polls the Windows clipboard sequence number (~4 Hz) and
-records every text snippet into an in-memory ring buffer (no disk persistence).
-A global hotkey (default Ctrl+Shift+V, ~15 Hz edge-detected poll) pops up a
-dark, centered picker with type-to-filter, arrow-key navigation, and
-Enter/double-click to re-copy the chosen entry. The picker is created on demand
-and destroyed on close, so there is no idle UI cost.
+A small, static, draggable clipboard icon (drawn in the pet's teal art style)
+floats on screen. Left-click it (or press Ctrl+Shift+V) to open a two-column
+panel: ALL (recent copies, in-memory) and FAVORITES (kept items, persisted to
+favorites.json). Click a row's text to copy it and close. Star moves an item
+between columns. Check rows in ALL (shift-click for ranges) to bulk-remove.
+Right-click the icon for a utility menu. Pure Python 3.12 stdlib.
 """
-import os
-import sys
-import traceback
-
+import os, sys, traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import winkit.startup as startup
 startup.guard_streams()  # MUST be the first executable statement (pythonw-at-login safety)
 
+import time
 import tkinter as tk
 
-import clip_history
-import config
+import winkit.window as window
 import winkit.input as wkinput
+import clip_store
+import config
+import timeago
+from selection import shift_range
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
 LOG_PATH = os.path.join(HERE, "toybox.log")
+FAV_PATH = os.path.join(HERE, "favorites.json")
 
-# Clipboard change-poll cadence (Global Constraints: ~4 Hz).
 CAPTURE_MS = 250
+DRAG_THRESHOLD = 4
 
-# Picker visual theme (dark).
-BG = "#1e1f22"
+ICON = 44
+KEY = window.KEY_COLOR
+
+# Icon palette (teal clipboard, matching the pet).
+IC_BODY = "#4ac4c4"
+IC_BODY_DK = "#36a0a0"
+IC_PAPER = "#eef7f7"
+IC_LINE = "#9fc9c9"
+IC_CLIP = "#2f8f8f"
+IC_OUTLINE = "#1f3a3a"
+
+# Panel theme (dark).
+PANEL_BG = "#1e1f22"
+COL_BG = "#212429"
+ROW_HOVER = "#2a2e36"
+SEL_BG = "#314059"
 FG = "#e8e8e8"
-SEL_BG = "#3b6ea5"
-SEL_FG = "#ffffff"
-ENTRY_BG = "#2b2d31"
-BORDER = "#4a4d52"
 DIM = "#8a8d92"
+BORDER = "#3a3d42"
+ENTRY_BG = "#2b2d31"
+TEAL = "#4ac4c4"
+STAR_ON = "#ffce4d"
+STAR_OFF = "#70747a"
+DEL_HOVER = "#e0695f"
 
-MAX_ROWS = 10        # listbox height cap
-LINE_CAP = 80        # max chars shown per entry
-RETURN_GLYPH = "⏎"  # ⏎  shown where newlines were
+COL_W = 300
+PANEL_W = 632
+PANEL_H = 420
+LINE_CAP = 46
 
 
 def _smoke_ms():
@@ -48,241 +67,452 @@ def _smoke_ms():
 
 
 def _one_line(text):
-    """Collapse a snippet to a single, length-capped display line."""
-    flat = text.replace("\r\n", " ").replace("\r", " ").replace("\n", RETURN_GLYPH)
+    flat = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ⏎ ")
     flat = flat.replace("\t", " ").strip()
     if len(flat) > LINE_CAP:
-        flat = flat[:LINE_CAP - 1] + "…"  # …
-    return flat or RETURN_GLYPH
+        flat = flat[:LINE_CAP - 1] + "…"
+    return flat or "⏎"
 
 
-class ClipboardApp:
-    def __init__(self, root, cfg):
-        self.root = root
-        self.cfg = cfg
-        self.history = clip_history.ClipHistory(cfg["clipboard"]["max_items"])
-        self.picker = None          # current Toplevel or None
-        self.listbox = None
-        self.entry = None
-        self.filter_var = None
-        self.visible = []           # list of (original_index, display_line) currently shown
-        # Seed with the current sequence so the first real copy registers as a change.
-        self._last_seq = wkinput.clipboard_sequence()
-        # Also seed history with whatever text is already on the clipboard, so the
-        # very first hotkey press has something to show (e.g. text copied before
-        # this watcher was started).
+def _round_rect(canvas, x0, y0, x1, y1, r, **kw):
+    pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+           x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+    return canvas.create_polygon(pts, smooth=True, **kw)
+
+
+# ---------------------------------------------------------------------------
+class ClipPanel:
+    """The two-column clipboard panel (a Toplevel built fresh on each open)."""
+
+    def __init__(self, app):
+        self.app = app
+        self.store = app.store
+        self._selected = set()   # texts checked in ALL
+        self._anchor = None      # index in the current ALL view (for shift-select)
+        self._all_texts = []     # texts currently shown in ALL (view order)
+
+        win = tk.Toplevel(app.root)
+        self.win = win
+        win.overrideredirect(True)
+        win.configure(bg=BORDER)
+        win.attributes("-topmost", True)
+
+        outer = tk.Frame(win, bg=PANEL_BG)
+        outer.pack(fill="both", expand=True, padx=1, pady=1)
+
+        self._build_header(outer)
+        body = tk.Frame(outer, bg=PANEL_BG)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        self.all_inner = self._build_column(body, "ALL", side="left")
+        self.fav_inner = self._build_column(body, "FAVORITES", side="right")
+
+        self.footer = tk.Frame(outer, bg=PANEL_BG, height=34)
+        self.footer.pack(fill="x", padx=8, pady=(0, 8))
+        self.remove_btn = tk.Label(
+            self.footer, text="", bg="#4a2b2b", fg="#ffd9d4",
+            font=("Segoe UI", 9, "bold"), padx=10, pady=4, cursor="hand2")
+        self.remove_btn.bind("<Button-1>", lambda e: self._remove_selected())
+
+        win.bind("<Escape>", lambda e: self.close())
+        win.bind("<FocusOut>", self._on_focus_out)
+        self._place()
+        win.deiconify()
+        win.lift()
+        win.focus_force()
+        self.refresh()
+        self.search.focus_set()
+
+    # -- chrome -----------------------------------------------------------
+    def _build_header(self, parent):
+        hdr = tk.Frame(parent, bg=PANEL_BG)
+        hdr.pack(fill="x", padx=8, pady=(8, 6))
+
+        self.cap_lbl = tk.Label(hdr, bg=PANEL_BG, font=("Segoe UI", 10),
+                                cursor="hand2")
+        self.cap_lbl.pack(side="left")
+        self.cap_lbl.bind("<Button-1>", lambda e: self._toggle_capture())
+        self._render_capture()
+
+        close = tk.Label(hdr, text="✕", bg=PANEL_BG, fg=DIM,
+                         font=("Segoe UI", 11), cursor="hand2")
+        close.pack(side="right")
+        close.bind("<Button-1>", lambda e: self.close())
+        close.bind("<Enter>", lambda e: close.config(fg=DEL_HOVER))
+        close.bind("<Leave>", lambda e: close.config(fg=DIM))
+
+        self.search_var = tk.StringVar()
+        self.search = tk.Entry(hdr, textvariable=self.search_var, bg=ENTRY_BG,
+                               fg=FG, insertbackground=FG, relief="flat",
+                               font=("Segoe UI", 10), highlightthickness=1,
+                               highlightbackground=BORDER, highlightcolor=TEAL)
+        self.search.pack(side="right", padx=8, ipady=3, fill="x", expand=True)
+        self.search_var.trace_add("write", lambda *_: self.refresh())
+
+    def _build_column(self, parent, title, side):
+        col = tk.Frame(parent, bg=COL_BG, width=COL_W)
+        col.pack(side=side, fill="both", expand=True, padx=(0, 6) if side == "left" else (6, 0))
+        col.pack_propagate(False)
+        tk.Label(col, text=title, bg=COL_BG, fg=DIM, anchor="w",
+                 font=("Segoe UI", 8, "bold")).pack(fill="x", padx=8, pady=(6, 2))
+        canvas = tk.Canvas(col, bg=COL_BG, highlightthickness=0)
+        sb = tk.Scrollbar(col, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=COL_BG)
+        canvas.create_window((0, 0), window=inner, anchor="nw", width=COL_W - 16)
+        canvas.configure(yscrollcommand=sb.set)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        def wheel(e):
+            canvas.yview_scroll(int(-e.delta / 120), "units")
+        for w in (canvas, inner):
+            w.bind("<Enter>", lambda e, c=canvas: c.bind_all("<MouseWheel>", wheel))
+            w.bind("<Leave>", lambda e, c=canvas: c.unbind_all("<MouseWheel>"))
+        return inner
+
+    def _place(self):
+        self.win.update_idletasks()
+        ix, iy = self.app.root.winfo_x(), self.app.root.winfo_y()
+        sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+        x = ix + ICON + 8
+        if x + PANEL_W > sw:
+            x = ix - PANEL_W - 8
+        x = max(8, min(x, sw - PANEL_W - 8))
+        y = max(8, min(iy, sh - PANEL_H - 8))
+        self.win.geometry("%dx%d+%d+%d" % (PANEL_W, PANEL_H, x, y))
+
+    # -- rendering --------------------------------------------------------
+    def refresh(self):
+        needle = self.search_var.get().lower()
+        for inner in (self.all_inner, self.fav_inner):
+            for child in inner.winfo_children():
+                child.destroy()
+        now = time.time()
+
+        recent = [e for e in self.store.recent() if needle in e["text"].lower()]
+        favs = [e for e in self.store.favorites() if needle in e["text"].lower()]
+        self._all_texts = [e["text"] for e in recent]
+        self._selected &= set(self._all_texts)
+
+        if not recent:
+            self._empty(self.all_inner, "nothing copied yet" if not needle else "no matches")
+        for i, e in enumerate(recent):
+            self._all_row(i, e, now)
+        if not favs:
+            self._empty(self.fav_inner, "star items to keep them" if not needle else "no matches")
+        for e in favs:
+            self._fav_row(e, now)
+        self._render_remove()
+
+    def _empty(self, parent, msg):
+        tk.Label(parent, text="  " + msg, bg=COL_BG, fg=DIM,
+                 anchor="w", font=("Segoe UI", 9, "italic")).pack(fill="x", pady=6)
+
+    def _row_frame(self, parent, text):
+        row = tk.Frame(parent, bg=COL_BG)
+        row.pack(fill="x", pady=1)
+
+        def hover(on):
+            bg = ROW_HOVER if on else (SEL_BG if text in self._selected else COL_BG)
+            row.config(bg=bg)
+            for c in row.winfo_children():
+                if isinstance(c, tk.Label):
+                    c.config(bg=bg)
+        row.bind("<Enter>", lambda e: hover(True))
+        row.bind("<Leave>", lambda e: hover(False))
+        return row
+
+    def _meta_labels(self, row, entry, bg):
+        ago = timeago.format_ago(time.time() - entry["time"])
+        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="w",
+                 font=("Segoe UI", 8)).pack(side="left")
+        txt = tk.Label(row, text=_one_line(entry["text"]), bg=bg, fg=FG,
+                       anchor="w", font=("Consolas", 9), cursor="hand2")
+        txt.pack(side="left", fill="x", expand=True)
+        txt.bind("<Button-1>", lambda e, t=entry["text"]: self._copy_and_close(t))
+        tk.Label(row, text=str(len(entry["text"])), bg=bg, fg=DIM, width=4,
+                 anchor="e", font=("Segoe UI", 8)).pack(side="right")
+        return txt
+
+    def _icon_btn(self, row, glyph, color, bg, cmd):
+        b = tk.Label(row, text=glyph, bg=bg, fg=color, width=2,
+                     font=("Segoe UI", 10), cursor="hand2")
+        b.pack(side="right")
+        b.bind("<Button-1>", lambda e: cmd())
+        return b
+
+    def _all_row(self, index, entry, now):
+        text = entry["text"]
+        bg = SEL_BG if text in self._selected else COL_BG
+        row = self._row_frame(self.all_inner, text)
+        row.config(bg=bg)
+        chk = tk.Label(row, text="☑" if text in self._selected else "☐", bg=bg,
+                       fg=TEAL if text in self._selected else STAR_OFF,
+                       font=("Segoe UI", 10), cursor="hand2")
+        chk.pack(side="left", padx=(2, 2))
+        chk.bind("<Button-1>", lambda e, i=index, t=text: self._on_check(i, t, e))
+        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._icon_btn(row, "☆", STAR_OFF, bg, lambda t=text: self._favorite(t))
+        self._meta_labels(row, entry, bg)
+
+    def _fav_row(self, entry, now):
+        text = entry["text"]
+        row = self._row_frame(self.fav_inner, text)
+        self._icon_btn(row, "✕", DIM, COL_BG, lambda t=text: self._delete(t))
+        self._icon_btn(row, "★", STAR_ON, COL_BG, lambda t=text: self._unfavorite(t))
+        self._meta_labels(row, entry, COL_BG)
+
+    def _render_remove(self):
+        n = len(self._selected)
+        if n:
+            self.remove_btn.config(text="Remove selected (%d)" % n)
+            self.remove_btn.pack(side="left")
+        else:
+            self.remove_btn.pack_forget()
+
+    def _render_capture(self):
+        on = bool(self.app.cfg["clipboard"]["capture"])
+        self.cap_lbl.config(text=("⏻ capture on" if on else "⏻ capture off"),
+                            fg=(TEAL if on else DIM))
+
+    # -- actions ----------------------------------------------------------
+    def _copy_and_close(self, text):
         try:
-            existing = self.root.clipboard_get()
-            if existing and existing.strip():
-                self.history.add(existing)
+            self.app.root.clipboard_clear()
+            self.app.root.clipboard_append(text)
+            self.app.absorb_seq()
         except tk.TclError:
             pass
-        self._poll_clipboard()
-        # Global hotkey -> open picker. Fall back to the default chord if the
-        # configured hotkey contains an unknown key token.
-        try:
-            self.hotkey = wkinput.HotkeyPoller(
-                root, cfg["clipboard"]["hotkey"], self.show_picker, 66
-            )
-        except (ValueError, TypeError):
-            self.hotkey = wkinput.HotkeyPoller(
-                root, config.DEFAULTS["clipboard"]["hotkey"], self.show_picker, 66
-            )
+        self.close()
 
-    # -- clipboard capture loop -------------------------------------------
-    def _poll_clipboard(self):
+    def _favorite(self, text):
+        self.store.favorite(text)
+        self.refresh()
+
+    def _unfavorite(self, text):
+        self.store.unfavorite(text)
+        self.refresh()
+
+    def _delete(self, text):
+        self.store.delete(text)
+        self._selected.discard(text)
+        self.refresh()
+
+    def _on_check(self, index, text, event):
+        if event.state & 0x0001 and self._anchor is not None:  # Shift
+            for j in shift_range(self._anchor, index):
+                if 0 <= j < len(self._all_texts):
+                    self._selected.add(self._all_texts[j])
+        else:
+            if text in self._selected:
+                self._selected.discard(text)
+            else:
+                self._selected.add(text)
+            self._anchor = index
+        self.refresh()
+
+    def _remove_selected(self):
+        if not self._selected:
+            return
+        self.store.delete_many(list(self._selected))
+        self._selected.clear()
+        self._anchor = None
+        self.refresh()
+
+    def _toggle_capture(self):
+        self.app.cfg["clipboard"]["capture"] = not self.app.cfg["clipboard"]["capture"]
+        self.app.save_cfg()
+        self._render_capture()
+
+    def _on_focus_out(self, event):
+        try:
+            if self.win.focus_get() is None:
+                self.close()
+        except (KeyError, tk.TclError):
+            pass
+
+    def close(self):
+        self.app.panel = None
+        try:
+            self.win.destroy()
+        except tk.TclError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+class ClipboardApp:
+    def __init__(self, root, store, cfg):
+        self.root = root
+        self.store = store
+        self.cfg = cfg
+        self.panel = None
+
+        root.overrideredirect(True)
+        root.configure(bg=KEY)
+        root.attributes("-topmost", True)
+        root.attributes("-transparentcolor", KEY)
+        self._place_icon()
+
+        self.canvas = tk.Canvas(root, width=ICON, height=ICON, bg=KEY,
+                                highlightthickness=0, bd=0)
+        self.canvas.pack()
+        self._draw_icon()
+
+        root.update()
+        window.apply_overlay_styles(root, clickthrough=False, no_activate=True)
+
+        self._moved = False
+        self._dx = self._dy = 0
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Button-3>", self._menu)
+        self.canvas.configure(cursor="hand2")
+
+        self.menu = tk.Menu(root, tearoff=0)
+
+        # clipboard capture
+        try:
+            existing = root.clipboard_get()
+            if existing and existing.strip():
+                store.add(existing, time.time())
+        except tk.TclError:
+            pass
+        self._last_seq = wkinput.clipboard_sequence()
+        self._poll()
+
+        try:
+            self.hotkey = wkinput.HotkeyPoller(root, cfg["clipboard"]["hotkey"],
+                                               self.open_panel, 66)
+        except (ValueError, TypeError):
+            self.hotkey = wkinput.HotkeyPoller(root, config.DEFAULTS["clipboard"]["hotkey"],
+                                               self.open_panel, 66)
+
+    # -- icon -------------------------------------------------------------
+    def _place_icon(self):
+        c = self.cfg["clipboard"]
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = c["x"] if c["x"] is not None else sw - ICON - 24
+        y = c["y"] if c["y"] is not None else sh - ICON - 80
+        x = max(0, min(int(x), sw - ICON))
+        y = max(0, min(int(y), sh - ICON))
+        self.root.geometry("%dx%d+%d+%d" % (ICON, ICON, x, y))
+
+    def _draw_icon(self):
+        c = self.canvas
+        _round_rect(c, 7, 9, 37, 41, 5, fill=IC_BODY, outline=IC_OUTLINE, width=2)
+        _round_rect(c, 11, 13, 33, 37, 3, fill=IC_PAPER, outline="")
+        for i in range(3):
+            y = 19 + i * 5
+            c.create_line(15, y, 29, y, fill=IC_LINE, width=2)
+        _round_rect(c, 16, 5, 28, 14, 3, fill=IC_CLIP, outline=IC_OUTLINE, width=2)
+
+    def _press(self, e):
+        self._moved = False
+        self._dx = e.x_root - self.root.winfo_x()
+        self._dy = e.y_root - self.root.winfo_y()
+        self._sx, self._sy = e.x_root, e.y_root
+
+    def _drag(self, e):
+        if abs(e.x_root - self._sx) + abs(e.y_root - self._sy) > DRAG_THRESHOLD:
+            self._moved = True
+        if self._moved:
+            self.root.geometry("+%d+%d" % (e.x_root - self._dx, e.y_root - self._dy))
+
+    def _release(self, e):
+        if self._moved:
+            self.cfg["clipboard"]["x"] = self.root.winfo_x()
+            self.cfg["clipboard"]["y"] = self.root.winfo_y()
+            self.save_cfg()
+        else:
+            self.toggle_panel()
+
+    # -- panel ------------------------------------------------------------
+    def toggle_panel(self):
+        if self.panel is not None and self.panel.win.winfo_exists():
+            self.panel.close()
+        else:
+            self.open_panel()
+
+    def open_panel(self):
+        if self.panel is not None and self.panel.win.winfo_exists():
+            self.panel.close()
+        self.panel = ClipPanel(self)
+
+    # -- right-click menu -------------------------------------------------
+    def _menu(self, e):
+        m = self.menu
+        m.delete(0, "end")
+        on = bool(self.cfg["clipboard"]["capture"])
+        m.add_command(label="Pause capture" if on else "Resume capture",
+                      command=self._toggle_capture)
+        m.add_command(label="Clear history", command=self._clear_history)
+        m.add_separator()
+        enabled = startup.is_run_at_startup("Toybox_clipboard")
+        m.add_command(label=("✓ Run at login" if enabled else "Run at login"),
+                      command=self._toggle_startup)
+        m.add_separator()
+        m.add_command(label="Hide icon", command=self.root.withdraw)
+        m.add_command(label="Quit", command=self.root.destroy)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def _toggle_capture(self):
+        self.cfg["clipboard"]["capture"] = not self.cfg["clipboard"]["capture"]
+        self.save_cfg()
+        if self.panel is not None and self.panel.win.winfo_exists():
+            self.panel._render_capture()
+
+    def _clear_history(self):
+        self.store.clear_recent()
+        if self.panel is not None and self.panel.win.winfo_exists():
+            self.panel.refresh()
+
+    def _toggle_startup(self):
+        enabled = startup.is_run_at_startup("Toybox_clipboard")
+        startup.set_run_at_startup("Toybox_clipboard", os.path.abspath(__file__), not enabled)
+
+    # -- capture loop -----------------------------------------------------
+    def absorb_seq(self):
+        self._last_seq = wkinput.clipboard_sequence()
+
+    def _poll(self):
         try:
             seq = wkinput.clipboard_sequence()
             if seq != self._last_seq:
                 self._last_seq = seq
-                try:
-                    text = self.root.clipboard_get()
-                except tk.TclError:
-                    text = None  # non-text clipboard (image/files) -> skip
-                if text:
-                    self.history.add(text)
+                if self.cfg["clipboard"]["capture"]:
+                    try:
+                        text = self.root.clipboard_get()
+                    except tk.TclError:
+                        text = None
+                    if text:
+                        self.store.add(text, time.time())
         finally:
-            self.root.after(CAPTURE_MS, self._poll_clipboard)
+            self.root.after(CAPTURE_MS, self._poll)
 
-    # -- picker ------------------------------------------------------------
-    def show_picker(self):
-        # A picker is already open: destroy and reopen fresh so it reflects the
-        # latest history and lands on top with focus.
-        if self.picker is not None and self.picker.winfo_exists():
-            self._close_picker()
-
-        win = tk.Toplevel(self.root)
-        self.picker = win
-        win.title("Clipboard")
-        win.configure(bg=BORDER)
-        win.overrideredirect(True)          # thin-bordered, chromeless look
-        win.attributes("-topmost", True)
-
-        # Inset frame creates a 1px border via the BORDER-colored toplevel bg.
-        frame = tk.Frame(win, bg=BG)
-        frame.pack(fill="both", expand=True, padx=1, pady=1)
-
-        header = tk.Label(
-            frame, text="Clipboard history  —  type to filter, Enter to paste",
-            bg=BG, fg=DIM, anchor="w", font=("Segoe UI", 9),
-        )
-        header.pack(fill="x", padx=8, pady=(6, 2))
-
-        self.filter_var = tk.StringVar()
-        self.entry = tk.Entry(
-            frame, textvariable=self.filter_var, bg=ENTRY_BG, fg=FG,
-            insertbackground=FG, relief="flat", font=("Segoe UI", 11),
-            highlightthickness=1, highlightbackground=BORDER,
-            highlightcolor=SEL_BG,
-        )
-        self.entry.pack(fill="x", padx=8, pady=(0, 6), ipady=4)
-        self.filter_var.trace_add("write", lambda *_: self._refresh_list())
-
-        self.listbox = tk.Listbox(
-            frame, bg=BG, fg=FG, selectbackground=SEL_BG, selectforeground=SEL_FG,
-            relief="flat", highlightthickness=0, activestyle="none",
-            font=("Consolas", 10), borderwidth=0, exportselection=False,
-        )
-        self.listbox.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-
-        self._refresh_list()
-
-        # Key/mouse bindings on the picker.
-        win.bind("<Escape>", lambda e: self._close_picker())
-        self.entry.bind("<Down>", self._on_down)
-        self.entry.bind("<Up>", self._on_up)
-        self.entry.bind("<Return>", self._on_accept)
-        self.listbox.bind("<Down>", self._on_down)
-        self.listbox.bind("<Up>", self._on_up)
-        self.listbox.bind("<Return>", self._on_accept)
-        self.listbox.bind("<Double-Button-1>", self._on_accept)
-        # Clicking away closes the picker.
-        win.bind("<FocusOut>", self._on_focus_out)
-
-        # Size + center on the screen the cursor is on (primary screen metrics).
-        self._center(win)
-        win.deiconify()
-        win.lift()
-        win.focus_force()
-        # Type-to-filter is the primary interaction, so focus the entry; arrow
-        # keys still move the listbox selection via the bindings above.
-        self.entry.focus_set()
-
-    def _center(self, win):
-        rows = max(1, min(MAX_ROWS, len(self.visible) or len(self.history)))
-        self.listbox.configure(height=rows)
-        win.update_idletasks()
-        w = 560
-        h = win.winfo_reqheight()
-        sw = win.winfo_screenwidth()
-        sh = win.winfo_screenheight()
-        x = (sw - w) // 2
-        y = (sh - h) // 3  # a touch above center reads better
-        win.geometry(f"{w}x{h}+{x}+{y}")
-
-    def _refresh_list(self):
-        if self.listbox is None:
-            return
-        needle = (self.filter_var.get() if self.filter_var else "").lower()
-        self.visible = []
-        self.listbox.delete(0, tk.END)
-        for idx, original in enumerate(self.history.items()):
-            line = _one_line(original)
-            if needle and needle not in original.lower():
-                continue
-            self.visible.append((idx, line))
-            self.listbox.insert(tk.END, "  " + line)
-        if self.visible:
-            self.listbox.selection_clear(0, tk.END)
-            self.listbox.selection_set(0)
-            self.listbox.activate(0)
-            self.listbox.see(0)
-        else:
-            hint = ("  (no matches)" if len(self.history)
-                    else "  (clipboard history is empty — copy some text)")
-            self.listbox.insert(tk.END, hint)
-            self.listbox.itemconfig(0, foreground=DIM)
-
-    # -- navigation --------------------------------------------------------
-    def _current_index(self):
-        sel = self.listbox.curselection()
-        return sel[0] if sel else -1
-
-    def _move(self, delta):
-        n = self.listbox.size()
-        if n == 0:
-            return
-        cur = self._current_index()
-        if cur < 0:
-            cur = 0 if delta > 0 else n - 1
-        else:
-            cur = max(0, min(n - 1, cur + delta))
-        self.listbox.selection_clear(0, tk.END)
-        self.listbox.selection_set(cur)
-        self.listbox.activate(cur)
-        self.listbox.see(cur)
-
-    def _on_down(self, event):
-        self._move(1)
-        return "break"
-
-    def _on_up(self, event):
-        self._move(-1)
-        return "break"
-
-    def _on_accept(self, event):
-        pos = self._current_index()
-        if pos < 0 or pos >= len(self.visible):
-            return "break"
-        original_index, _ = self.visible[pos]
-        text = self.history.items()[original_index]
+    def save_cfg(self):
         try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(text)
-            # Re-copying our own value bumps the sequence; absorb it so the
-            # capture loop does not treat the re-paste as a fresh entry.
-            self._last_seq = wkinput.clipboard_sequence()
-        except tk.TclError:
+            config.save(CFG_PATH, self.cfg)
+        except Exception:
             pass
-        self.history.select(original_index)
-        self._close_picker()
-        return "break"
-
-    def _on_focus_out(self, event):
-        # Only close if focus truly left the picker (not an internal child).
-        if self.picker is None:
-            return
-        try:
-            focused = self.picker.focus_get()
-        except KeyError:
-            focused = None
-        if focused is None:
-            self._close_picker()
-
-    def _close_picker(self):
-        win = self.picker
-        self.picker = None
-        self.listbox = None
-        self.entry = None
-        self.filter_var = None
-        self.visible = []
-        if win is not None:
-            try:
-                win.destroy()
-            except tk.TclError:
-                pass
 
 
 def main():
     if not _smoke_ms() and not startup.acquire_single_instance("Toybox_clipboard"):
-        return  # another clipboard watcher is already running
+        return
     cfg = config.load(CFG_PATH)
+    store = clip_store.ClipStore(cfg["clipboard"]["max_items"], FAV_PATH)
+
+    window.enable_dpi_awareness()
     root = tk.Tk()
-    root.withdraw()  # hidden controller; the picker is the only visible UI
-    ClipboardApp(root, cfg)
+    ClipboardApp(root, store, cfg)
+
     ms = _smoke_ms()
     if ms:
-        # Root is never shown, so just schedule a clean exit for smoke mode.
         root.after(ms, root.destroy)
     root.mainloop()
 
