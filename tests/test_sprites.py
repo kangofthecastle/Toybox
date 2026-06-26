@@ -40,5 +40,18 @@ class TestSpriteSheet(unittest.TestCase):
         self.assertIs(s.frame(12, 4), s.frame(2, 4))  # 12 % 10 == 2
 
 
+class TestOpaqueBbox(unittest.TestCase):
+    def test_bbox_of_a_rectangle(self):
+        opq = lambda x, y: 2 <= x <= 5 and 3 <= y <= 7
+        self.assertEqual(sprites.opaque_bbox(10, 10, opq), (2, 3, 5, 7))
+
+    def test_bbox_single_pixel(self):
+        opq = lambda x, y: (x, y) == (4, 4)
+        self.assertEqual(sprites.opaque_bbox(8, 8, opq), (4, 4, 4, 4))
+
+    def test_bbox_none_when_fully_transparent(self):
+        self.assertIsNone(sprites.opaque_bbox(8, 8, lambda x, y: False))
+
+
 if __name__ == "__main__":
     unittest.main()
