@@ -49,6 +49,13 @@ _user32.WindowFromPoint.restype = wintypes.HWND
 _user32.WindowFromPoint.argtypes = [wintypes.POINT]
 _user32.GetAncestor.restype = wintypes.HWND
 _user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+_user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+_user32.PostMessageW.restype = wintypes.BOOL
+_user32.PostMessageW.argtypes = [
+    wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+
+WM_NULL = 0x0000
 
 
 def enable_dpi_awareness():
@@ -108,6 +115,31 @@ def set_topmost(hwnd, on):
     return bool(_user32.SetWindowPos(
         hwnd, ctypes.c_void_p(insert_after), 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
+
+
+def foreground_for_popup(hwnd):
+    """Bring a normally no-activate overlay window to the foreground so a native
+    popup menu it owns dismisses when the user clicks outside it.
+
+    A WS_EX_NOACTIVATE window never becomes the foreground window, and Windows
+    only auto-dismisses a TrackPopupMenu whose owner is the foreground window
+    (KB135788). Temporarily clear NOACTIVATE and SetForegroundWindow before the
+    menu is posted. Returns a restore() to call once the menu closes: it posts a
+    benign WM_NULL (the second half of the KB135788 workaround) and re-applies
+    NOACTIVATE so later clicks/drags on the cat don't steal focus again."""
+    style = int(_get(hwnd, GWL_EXSTYLE) or 0)
+    had_noactivate = bool(style & WS_EX_NOACTIVATE)
+    if had_noactivate:
+        _set(hwnd, GWL_EXSTYLE, ctypes.c_void_p(style & ~WS_EX_NOACTIVATE))
+    _user32.SetForegroundWindow(hwnd)
+
+    def restore():
+        _user32.PostMessageW(hwnd, WM_NULL, 0, 0)
+        if had_noactivate:
+            cur = int(_get(hwnd, GWL_EXSTYLE) or 0)
+            _set(hwnd, GWL_EXSTYLE, ctypes.c_void_p(cur | WS_EX_NOACTIVATE))
+
+    return restore
 
 
 def root_window_at(x, y):

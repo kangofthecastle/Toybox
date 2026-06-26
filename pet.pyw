@@ -347,10 +347,15 @@ class Cat:
                               command=lambda k=key: self._toggle_cfg(k))
         m.add_separator()
         m.add_command(label="Hide cat", command=self.root.destroy)
+        # The cat window is WS_EX_NOACTIVATE, so it never becomes foreground and a
+        # native popup menu it owns won't dismiss on an outside click (KB135788).
+        # Briefly bring it foreground around the (modal, on Windows) popup.
+        restore = window.foreground_for_popup(self.hwnd)
         try:
             m.tk_popup(event.x_root, event.y_root)
         finally:
             m.grab_release()
+            restore()
 
     # --- focus timer + reminders (Phase 3) ------------------------------
     def _start_focus(self):
