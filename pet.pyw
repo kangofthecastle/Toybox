@@ -33,10 +33,7 @@ import petkit.bubble as bubble
 import petkit.pomodoro as pomodoro
 import petkit.reminders as reminders
 import petkit.nudges as nudges
-import petkit.clip_actions as clip_actions
-import petkit.focus_tracker as focus_tracker
 import petkit.pins as pins
-import winkit.apps as apps
 import winkit.dnd as dnd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -140,12 +137,8 @@ class Cat:
         self.reminders = reminders.Reminders(os.path.join(HERE, "reminders.json"))
         self._next_reminder_check = 0.0   # low-rate reminder cursor (monotonic)
 
-        # Phase 3 "assistant" (cont.): activity-gated break nudges, read-only
-        # clipboard quick-actions, and a per-app foreground-focus tally.
+        # Phase 3 "assistant" (cont.): activity-gated break nudges.
         self.nudger = nudges.NudgeScheduler(interval_s=int(pet.get("nudge_min", 50)) * 60)
-        self.tally = focus_tracker.FocusTally()
-        self._clip_seq = wkinput.clipboard_sequence()
-        self._next_focus_sample = 0.0     # low-rate focus-sample cursor (monotonic)
 
         # Phase 4 "power-tools": Pin (hotkey toggles any window always-on-top) and
         # Catch & Carry (drop files on the cat; click to release as CF_HDROP).
@@ -278,9 +271,6 @@ class Cat:
         if key == "catnap":
             self.nap.reset()          # clear any stale internal nap state
             self.nap_state = "awake"
-        if key == "clip_actions" and self.cfg["pet"][key]:
-            # Re-baseline so re-enabling doesn't re-bubble the current clipboard.
-            self._clip_seq = wkinput.clipboard_sequence()
         if key == "pin":
             self._apply_pin_enabled()     # install/tear down the hotkey poller now
         if key == "carry":
@@ -321,7 +311,6 @@ class Cat:
                 sub.add_command(label="✕ " + label,
                                 command=lambda t=text: self._cancel_reminder(t))
             m.add_cascade(label="Reminders (%d)" % len(pending), menu=sub)
-        m.add_command(label="Today's apps…", command=self._show_top_apps)
         # Catch & Carry: when holding files, offer drop-to-clipboard / let-go.
         if self._held:
             m.add_command(label="Drop %d file(s) → clipboard" % len(self._held),
@@ -338,8 +327,6 @@ class Cat:
                            ("greeter", "Welcome-back greeting"),
                            ("reminders", "Reminders"),
                            ("nudges", "Break nudges"),
-                           ("clip_actions", "Clipboard helper"),
-                           ("focus_tracker", "Track app focus"),
                            ("pin", "Pin window (hotkey)"),
                            ("carry", "Catch & carry files")):
             m.add_checkbutton(label=label, onvalue=1, offvalue=0,
@@ -415,25 +402,6 @@ class Cat:
         tk.Button(dlg, text="OK", command=submit).pack(pady=(4, 10))
         dlg.bind("<Return>", submit)
         dlg.bind("<Escape>", cancel)
-
-    # --- nudges + clipboard helper + focus tracker (Phase 3) ------------
-    def _show_clip_action(self, act):
-        """Passively bubble a clipboard quick-action result (no auto-open)."""
-        kind = act.get("kind")
-        if kind == "math":
-            self.bubble.say("= " + act["result"], secs=4)
-        elif kind == "url":
-            self.bubble.say("open link? \U0001F517", secs=4)
-        elif kind == "color":
-            self.bubble.say("\U0001F3A8 " + act["hex"], secs=4)
-
-    def _show_top_apps(self):
-        top = self.tally.top(3, now=time.monotonic())
-        if not top:
-            self.bubble.say("No app data yet", secs=3)
-            return
-        parts = ["%s %dm" % (app, int(secs) // 60) for app, secs in top]
-        self.bubble.say(" · ".join(parts), secs=5)
 
     # --- per-frame ------------------------------------------------------
     def _hop_offset(self, now):
@@ -623,25 +591,6 @@ class Cat:
         # Break nudges: reuse the `idle` already probed above for the nap cycle.
         if pet.get("nudges", True) and self.nudger.update(idle, now):
             self.bubble.say("Stretch break? \U0001F431", secs=4, chime=True)
-
-        # Clipboard quick-actions (read-only): ride the clipboard sequence number,
-        # so this costs nothing until the clipboard actually changes.
-        if pet.get("clip_actions", True):
-            seq = wkinput.clipboard_sequence()
-            if seq != self._clip_seq:
-                self._clip_seq = seq
-                try:
-                    txt = self.root.clipboard_get()
-                except tk.TclError:
-                    txt = ""
-                act = clip_actions.analyze(txt)
-                if act:
-                    self._show_clip_action(act)
-
-        # App-focus tally, low-rate (~1/3s): one O(1) foreground-window probe.
-        if pet.get("focus_tracker", True) and now >= self._next_focus_sample:
-            self._next_focus_sample = now + 3.0
-            self.tally.sample(apps.foreground_app_name(), now)
 
         try:
             self.draw(now)

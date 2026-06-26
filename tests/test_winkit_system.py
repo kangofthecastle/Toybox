@@ -196,14 +196,6 @@ class TestTrayConstruct(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
-class TestApps(unittest.TestCase):
-    def test_foreground_app_name_is_str(self):
-        import winkit.apps as A
-        name = A.foreground_app_name()
-        self.assertIsInstance(name, str)
-
-
-@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestPinHelpers(unittest.TestCase):
     def test_is_topmost_reads_exstyle_bit(self):
         # is_topmost() reads the WS_EX_TOPMOST extended-style bit. We drive the

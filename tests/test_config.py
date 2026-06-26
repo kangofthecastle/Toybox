@@ -147,11 +147,13 @@ class TestConfig(unittest.TestCase):
         self.assertIn("reminders", pet)
         self.assertIsInstance(pet["reminders"], bool)
 
-    def test_phase3_nudge_clip_focus_defaults_present(self):
+    def test_phase3_nudge_defaults_present(self):
         pet = config.defaults()["pet"]
-        for key in ("nudges", "clip_actions", "focus_tracker"):
+        for key in ("nudges",):
             self.assertIn(key, pet)
             self.assertIsInstance(pet[key], bool)
+        self.assertNotIn("clip_actions", pet)
+        self.assertNotIn("focus_tracker", pet)
         self.assertIn("nudge_min", pet)
         self.assertIsInstance(pet["nudge_min"], int)
         self.assertNotIsInstance(pet["nudge_min"], bool)
