@@ -68,8 +68,8 @@ class TestPetPhase3FocusReminders(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
-class TestPetPhase3NudgeClipFocus(unittest.TestCase):
-    def test_cat_has_nudge_clip_focus_objects_and_ticks(self):
+class TestPetPhase3Nudge(unittest.TestCase):
+    def test_cat_has_nudge_object_and_ticks(self):
         import tkinter as tk
         import winkit.window as window
         import config
@@ -87,9 +87,8 @@ class TestPetPhase3NudgeClipFocus(unittest.TestCase):
         try:
             cat = petmod.Cat(root, canvas, config.defaults())
             self.assertTrue(hasattr(cat, "nudger"))
-            self.assertTrue(hasattr(cat, "tally"))
-            cat.tick()                # one tick must run nudge/clip/focus paths
-            cat._show_top_apps()      # must not crash with no app data yet
+            self.assertFalse(hasattr(cat, "tally"))
+            cat.tick()                # one tick must run the nudge path
             cat.close()
         finally:
             root.destroy()
