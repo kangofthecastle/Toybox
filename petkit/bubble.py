@@ -15,9 +15,24 @@ BUBBLE_FILL = "#fffbe6"
 TEXT_FILL = "#202020"
 
 
+def bubble_xy(root_x, root_y, root_w, head_offset, w, h, gap=PAD):
+    """Top-left (x, y) for a ``w`` x ``h`` bubble: centered horizontally over the
+    pet window and resting ``gap`` px above the cat's head.
+
+    ``head_offset`` is the distance in px from the window's top edge down to the
+    cat's head line. The window is much taller than the sprite (it holds the glow
+    aura padding), so anchoring to the window top floats the bubble far above the
+    cat; offsetting by the head line keeps it tucked just over the cat's head.
+    ``head_offset=0`` reproduces the old window-top anchor."""
+    x = root_x + root_w // 2 - w // 2
+    y = root_y + head_offset - h - gap
+    return x, y
+
+
 class Bubble:
-    def __init__(self, root):
+    def __init__(self, root, head_offset=0):
         self.root = root
+        self.head_offset = head_offset
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.configure(bg=window.KEY_COLOR)
@@ -40,8 +55,8 @@ class Bubble:
         self.canvas.create_text(w / 2, h / 2, text=text, fill=TEXT_FILL,
                                 font=self.font)
         self.root.update_idletasks()
-        rx = self.root.winfo_rootx() + self.root.winfo_width() // 2 - w // 2
-        ry = self.root.winfo_rooty() - h - PAD
+        rx, ry = bubble_xy(self.root.winfo_rootx(), self.root.winfo_rooty(),
+                           self.root.winfo_width(), self.head_offset, w, h)
         self.win.geometry("%dx%d+%d+%d" % (w, h, rx, ry))
         self.win.deiconify()
         self.win.lift()
