@@ -122,11 +122,12 @@ class Cat:
             sleep_after_ms=int(pet.get("nap_after_s", 120)) * 1000)
         self.greeter = greeter.Greeter(
             away_after_ms=int(pet.get("away_after_s", 300)) * 1000)
-        # Anchor speech bubbles to the cat's head, not the (much taller) window
-        # top: the head/ears sit ~6 sprite rows below the sprite cell's top edge
-        # (the eyes are at row ~12), so the bubble tucks just over the cat.
-        head_y = int(self.base_y - self.sprite_px + 6 * self.zoom)
-        self.bubble = bubble.Bubble(root, head_offset=head_y)
+        # Anchor speech bubbles to the cat's RIGHT side, vertically centered on
+        # its face (eye row ~12), so the bubble sits just off the cat's cheek
+        # instead of floating above the (much taller) glow-aura window.
+        cat_right = int(self.cx + self.sprite_px / 2)
+        face_y = int(self.base_y - self.sprite_px + 12 * self.zoom)
+        self.bubble = bubble.Bubble(root, cat_right=cat_right, anchor_y=face_y)
         self.nap_state = "awake"
         self.nap_frame_i = 0
         self.nap_frame_t = self.t0
