@@ -122,18 +122,11 @@ class Cat:
             sleep_after_ms=int(pet.get("nap_after_s", 120)) * 1000)
         self.greeter = greeter.Greeter(
             away_after_ms=int(pet.get("away_after_s", 300)) * 1000)
-        # Anchor speech bubbles beside the cat's ACTUAL silhouette, not its padded
-        # 32px cell: measure the opaque body of the resting idle frame and place
-        # the bubble just past the cat's real right edge, vertically centered on
-        # the eye row (sprite y~13). bubble_xy flips it left near the screen edge.
-        cell_left = int(self.cx - self.sprite_px / 2)
-        cell_top = int(self.base_y - self.sprite_px)
-        bb = self.sheet.opaque_bounds(0) or (0, 0, 31, 31)
-        body_left = cell_left + bb[0] * self.zoom
-        body_right = cell_left + (bb[2] + 1) * self.zoom
-        face_y = cell_top + 13 * self.zoom
-        self.bubble = bubble.Bubble(root, body_left=body_left,
-                                    body_right=body_right, anchor_y=face_y)
+        # Anchor speech bubbles to the cat's head, not the (much taller) window
+        # top: the head/ears sit ~6 sprite rows below the sprite cell's top edge
+        # (the eyes are at row ~12), so the bubble tucks just over the cat.
+        head_y = int(self.base_y - self.sprite_px + 6 * self.zoom)
+        self.bubble = bubble.Bubble(root, head_offset=head_y)
         self.nap_state = "awake"
         self.nap_frame_i = 0
         self.nap_frame_t = self.t0
