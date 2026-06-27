@@ -57,6 +57,59 @@ def parse_reminder(text, now_epoch):
     return (msg or "Reminder", int(due))
 
 
+_UNIT_SECONDS = {"sec": 1, "min": 60, "hours": 3600}
+
+
+def due_from_fields(mode, amount, unit, hh, mm, now_epoch):
+    """Compute a reminder due-epoch from the Settings tab's structured fields. Pure.
+
+    mode="in": now_epoch + amount * unit-seconds (unit in 'sec'|'min'|'hours'); amount >= 0.
+    mode="at": today at hh:mm (24h), rolled to tomorrow if already <= now_epoch.
+    Returns an int epoch, or None on invalid input."""
+    if mode == "in":
+        try:
+            amount = int(amount)
+        except (TypeError, ValueError):
+            return None
+        if amount < 0 or unit not in _UNIT_SECONDS:
+            return None
+        return int(now_epoch) + amount * _UNIT_SECONDS[unit]
+    if mode == "at":
+        try:
+            hh, mm = int(hh), int(mm)
+        except (TypeError, ValueError):
+            return None
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        lt = list(time.localtime(now_epoch))
+        lt[3], lt[4], lt[5] = hh, mm, 0
+        try:
+            due = time.mktime(time.struct_time(tuple(lt)))
+        except (OverflowError, ValueError):
+            return None
+        if due <= now_epoch:
+            due += 86400
+        return int(due)
+    return None
+
+
+def format_due(due_epoch, now_epoch):
+    """Human-friendly fire time, e.g. '4:12pm'. Prefixes 'tomorrow ' for the next
+    calendar day and the weekday abbrev for any later day. Pure (localtime of an
+    injected epoch)."""
+    due = time.localtime(int(due_epoch))
+    h = due.tm_hour % 12 or 12
+    ap = "am" if due.tm_hour < 12 else "pm"
+    clock = "%d:%02d%s" % (h, due.tm_min, ap)
+    now = time.localtime(int(now_epoch))
+    if (due.tm_year, due.tm_yday) == (now.tm_year, now.tm_yday):
+        return clock
+    nxt = time.localtime(int(now_epoch) + 86400)
+    if (due.tm_year, due.tm_yday) == (nxt.tm_year, nxt.tm_yday):
+        return "tomorrow " + clock
+    return time.strftime("%a", due) + " " + clock
+
+
 class Reminders:
     def __init__(self, path):
         self.path = path
@@ -111,3 +164,12 @@ class Reminders:
         self._items = [i for i in self._items if i["text"] != text]
         if len(self._items) != before:
             self._save()
+
+    def remove(self, text, due):
+        """Remove the single pending item matching both text and due epoch."""
+        due = int(due)
+        for i, it in enumerate(self._items):
+            if it["text"] == text and int(it["due"]) == due:
+                del self._items[i]
+                self._save()
+                return
