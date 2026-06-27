@@ -7,7 +7,9 @@ helpers cannot be unit-tested directly. Mirrors clip_store.py / clip_history.py.
 
 _COLUMNS = "columns"
 _STACKED = "stacked"
-_SIZES = {_COLUMNS: (632, 420), _STACKED: (380, 640)}
+# Stacked keeps the columns width so toggling layouts never narrows the panel;
+# only the height grows to give the two stacked sections room.
+_SIZES = {_COLUMNS: (632, 420), _STACKED: (632, 620)}
 
 
 def flatten_line(text):

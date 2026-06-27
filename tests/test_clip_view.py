@@ -47,7 +47,13 @@ class TestLayoutHelpers(unittest.TestCase):
 
     def test_panel_size_known(self):
         self.assertEqual(clip_view.panel_size("columns"), (632, 420))
-        self.assertEqual(clip_view.panel_size("stacked"), (380, 640))
+        # Stacked keeps the columns width (only the height grows) so toggling
+        # never narrows the panel.
+        self.assertEqual(clip_view.panel_size("stacked"), (632, 620))
+
+    def test_stacked_keeps_columns_width(self):
+        self.assertEqual(clip_view.panel_size("stacked")[0],
+                         clip_view.panel_size("columns")[0])
 
     def test_panel_size_unknown_falls_back_to_columns(self):
         self.assertEqual(clip_view.panel_size("weird"), (632, 420))

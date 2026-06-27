@@ -45,8 +45,9 @@ new pure view logic lives in `clip_view.py` (no Tk import), unit-tested in
 - `next_layout(layout) -> str` — `"columns"` if `layout == "stacked"` else
   `"stacked"` (so an unrecognized value toggles to `"stacked"`).
 - `panel_size(layout) -> (int, int)` — `(width, height)` for the Toplevel:
-  `"columns"`→`(632, 420)` (today's size), `"stacked"`→`(380, 640)`; any other
-  value falls back to the columns size.
+  `"columns"`→`(632, 420)` (today's size), `"stacked"`→`(632, 620)` (same width
+  as columns so toggling never narrows the panel; only the height grows for the
+  two stacked sections); any other value falls back to the columns size.
 
 ## Component 1 — Horizontal scroll (full, untruncated rows)
 
