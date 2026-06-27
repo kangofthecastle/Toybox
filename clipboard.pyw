@@ -217,10 +217,21 @@ class ClipPanel:
         vsb = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
         hsb = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview)
         inner = tk.Frame(canvas, bg=COL_BG)
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def _sync(_e=None):
+            # Stretch the inner frame to fill the viewport when its content is
+            # smaller, so the scrollregion never drops below the canvas size and
+            # the scrollbars stay inert until content actually overflows.
+            vw, vh = canvas.winfo_width(), canvas.winfo_height()
+            w = max(inner.winfo_reqwidth(), vw)
+            h = max(inner.winfo_reqheight(), vh)
+            canvas.itemconfigure(win_id, width=w, height=h)
+            canvas.configure(scrollregion=(0, 0, w, h))
+
+        inner.bind("<Configure>", _sync)
+        canvas.bind("<Configure>", _sync)
         canvas.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
