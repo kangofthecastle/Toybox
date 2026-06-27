@@ -139,6 +139,14 @@ class ClipPanel:
         burger.bind("<Enter>", lambda e: burger.config(fg=FG))
         burger.bind("<Leave>", lambda e: burger.config(fg=DIM))
 
+        self.layout_btn = tk.Label(hdr, bg=PANEL_BG, fg=DIM,
+                                   font=("Segoe UI", 12), cursor="hand2")
+        self.layout_btn.pack(side="right", padx=(0, 8))
+        self.layout_btn.bind("<Button-1>", lambda e: self._toggle_layout())
+        self.layout_btn.bind("<Enter>", lambda e: self.layout_btn.config(fg=FG))
+        self.layout_btn.bind("<Leave>", lambda e: self.layout_btn.config(fg=DIM))
+        self._render_layout_btn()
+
         self.search_var = tk.StringVar()
         self.search = tk.Entry(hdr, textvariable=self.search_var, bg=ENTRY_BG,
                                fg=FG, insertbackground=FG, relief="flat",
@@ -150,10 +158,37 @@ class ClipPanel:
     def _build_body(self):
         self.body = tk.Frame(self.outer, bg=PANEL_BG)
         self.body.pack(fill="both", expand=True, padx=8, pady=(0, 6))
-        self.all_inner, self.all_canvas = self._build_column(
-            self.body, "ALL", "left", True)
-        self.fav_inner, self.fav_canvas = self._build_column(
-            self.body, "FAVORITES", "right", True)
+        if self.layout == "stacked":
+            self.all_inner, self.all_canvas = self._build_column(
+                self.body, "ALL", "top", False)
+            self.fav_inner, self.fav_canvas = self._build_column(
+                self.body, "FAVORITES", "bottom", False)
+        else:
+            self.all_inner, self.all_canvas = self._build_column(
+                self.body, "ALL", "left", True)
+            self.fav_inner, self.fav_canvas = self._build_column(
+                self.body, "FAVORITES", "right", True)
+
+    def _render_layout_btn(self):
+        # Glyph reflects the CURRENT layout: stacked rows vs. side-by-side columns.
+        self.layout_btn.config(text="▤" if self.layout == "stacked" else "▥")
+
+    def _rebuild_body(self):
+        try:
+            self.body.destroy()
+        except tk.TclError:
+            pass
+        self._build_body()
+        self.refresh()
+
+    def _toggle_layout(self):
+        self.layout = clip_view.next_layout(self.layout)
+        self.app.cfg["clipboard"]["layout"] = self.layout
+        self.app.save_cfg()
+        self.panel_w, self.panel_h = clip_view.panel_size(self.layout)
+        self._place()
+        self._rebuild_body()
+        self._render_layout_btn()
 
     def _build_column(self, parent, title, side, fixed_width):
         col = tk.Frame(parent, bg=COL_BG)
@@ -572,10 +607,14 @@ class ClipboardApp:
 
 
 def _smoke_exercise(app):
-    """Open the panel during a smoke run so its build paths execute."""
+    """Open the panel during a smoke run, then toggle its layout, so both
+    layouts' build paths execute."""
     long_text = "lorem ipsum dolor sit amet " * 8  # ~216 chars, one line
     app.store.add(long_text, time.time())
     app.open_panel()
+    panel = app.panel
+    if panel is not None:
+        app.root.after(300, panel._toggle_layout)
 
 
 def main():
