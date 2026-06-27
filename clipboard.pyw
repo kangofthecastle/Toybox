@@ -178,6 +178,11 @@ class ClipPanel:
 
     def _rebuild_body(self):
         try:
+            self.win.unbind_all("<MouseWheel>")
+            self.win.unbind_all("<Shift-MouseWheel>")
+        except tk.TclError:
+            pass
+        try:
             self.body.destroy()
         except tk.TclError:
             pass
@@ -259,7 +264,6 @@ class ClipPanel:
         for inner in (self.all_inner, self.fav_inner):
             for child in inner.winfo_children():
                 child.destroy()
-        now = time.time()
 
         recent = [e for e in self.store.recent() if needle in e["text"].lower()]
         favs = [e for e in self.store.favorites() if needle in e["text"].lower()]
@@ -269,11 +273,11 @@ class ClipPanel:
         if not recent:
             self._empty(self.all_inner, "nothing copied yet" if not needle else "no matches")
         for i, e in enumerate(recent):
-            self._all_row(i, e, now)
+            self._all_row(i, e)
         if not favs:
             self._empty(self.fav_inner, "star items to keep them" if not needle else "no matches")
         for e in favs:
-            self._fav_row(e, now)
+            self._fav_row(e)
         self._render_remove()
         for c in (self.all_canvas, self.fav_canvas):
             try:
@@ -333,7 +337,7 @@ class ClipPanel:
         txt.bind("<Button-1>", lambda e, t=entry["text"]: self._copy_and_close(t))
         return txt
 
-    def _all_row(self, index, entry, now):
+    def _all_row(self, index, entry):
         text = entry["text"]
         is_current = (text == self._current)
         row, bg = self._row_frame(self.all_inner, text, is_current)
@@ -351,7 +355,7 @@ class ClipPanel:
         self._len_lbl(row, entry, bg)
         self._text_lbl(row, entry, bg)
 
-    def _fav_row(self, entry, now):
+    def _fav_row(self, entry):
         text = entry["text"]
         is_current = (text == self._current)
         row, bg = self._row_frame(self.fav_inner, text, is_current)
@@ -628,7 +632,7 @@ class ClipboardApp:
 
 def _smoke_exercise(app):
     """Seed a long entry, point the live clipboard at it (highlight path), open
-    the panel, then toggle its layout — so every new build path executes."""
+    the panel and toggle its layout, so both layouts' build paths execute."""
     long_text = "lorem ipsum dolor sit amet " * 8  # ~216 chars, one line
     app.store.add(long_text, time.time())
     try:
