@@ -8,7 +8,7 @@ import tempfile
 DEFAULTS = {
     "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False},
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
-                  "x": None, "y": None, "capture": True},
+                  "x": None, "y": None, "capture": True, "layout": "columns"},
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
             "smoothing": 0.4, "idle_fps": 8, "active_fps": 30, "zoom": 4,
             "petting": True, "catnap": True, "greeter": True,
