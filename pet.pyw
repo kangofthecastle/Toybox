@@ -448,10 +448,24 @@ class Cat:
             return
 
         blinking = now < self.blink_until
+        base = 2 * z                                 # 8x8 px black base over each eye
+        if not blinking:
+            # Unified gaze: compute the dot's block-local offset ONCE from the
+            # midpoint of the two eyes, then seat the SAME (ldx, ldy) in both
+            # blocks. Both open eyes share z/base, so one offset places each dot
+            # identically within its own block -- the pupils always move together
+            # (no per-eye snap-grid divergence where one hops and the other holds).
+            (lax, lay), (rax, ray) = anchors
+            mcx = left_px + ((lax + rax) / 2.0) * z + base / 2.0   # midpoint center
+            mcy = top_px + ((lay + ray) / 2.0) * z + base / 2.0
+            ldx, ldy = eyes.pupil_dot_offset(
+                gx - (rootx + mcx), gy - (rooty + mcy),
+                base, z, max(1, z // 2),
+                reach=EYE_REACH, max_off=EYE_MAX_OFF)
+
         for e, (ax, ay) in zip(self.eyes, anchors):
             bx = left_px + ax * z                    # 2x2 base top-left (window space)
             by = top_px + ay * z
-            base = 2 * z                             # 8x8 px black base over the eye
             if blinking:
                 # Closed eye: fur-fill the 2x2, draw a 2px-wide x 1px-tall dash
                 # across its vertical middle; hide the open-eye items.
@@ -467,25 +481,11 @@ class Cat:
                 self.canvas.itemconfig(e["dot"], state="hidden")
                 continue
 
-            # Open eye: black 2x2 base, white 1px dot floated toward the cursor.
+            # Open eye: black 2x2 base, white 1px dot at the shared block-local
+            # offset computed above from the eyes' midpoint.
             self.canvas.coords(e["base"], bx, by, bx + base, by + base)
-            ecx = bx + base / 2.0                     # base center (window space)
-            ecy = by + base / 2.0
-            ox, oy = eyes.pupil_offset(gx - (rootx + ecx), gy - (rooty + ecy),
-                                       reach=EYE_REACH, max_off=EYE_MAX_OFF)
-            # Float the dot CENTER toward the cursor (base_center + off), so its
-            # top-left is offset back by half the dot. Snap to int px and clamp so
-            # the 4x4 dot stays fully inside the 8x8 base.
-            bxi, byi = int(round(bx)), int(round(by))
-            dx = int(round(ecx + ox - z / 2.0))
-            dy = int(round(ecy + oy - z / 2.0))
-            dx = min(max(dx, bxi), bxi + base - z)
-            dy = min(max(dy, byi), byi + base - z)
-            # Coarsen the gaze: snap the dot to a 2px grid (~3 positions/axis) so it
-            # reads pixel-art-steppy rather than continuously sliding.
-            step = max(1, z // 2)
-            dx = bxi + int(round((dx - bxi) / step)) * step
-            dy = byi + int(round((dy - byi) / step)) * step
+            dx = int(round(bx)) + ldx
+            dy = int(round(by)) + ldy
             self.canvas.coords(e["dot"], dx, dy, dx + z, dy + z)
             self.canvas.itemconfig(e["base"], state="normal")
             self.canvas.itemconfig(e["dot"], state="normal")
