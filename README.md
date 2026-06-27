@@ -92,4 +92,4 @@ Runs the pure-logic unit tests, real-system integration checks (metrics, clipboa
 
 ## Credits
 
-- `assets/meow.wav` — a single meow from the **CatMeows** dataset by L. Cavallini, S. Ntalampiras, et al. (Zenodo record [4008297](https://zenodo.org/records/4008297)), licensed **CC BY 4.0**.
+- `assets/meow.wav` — a single meow extracted and trimmed from the **CatMeows** dataset by L. Cavallini, S. Ntalampiras, et al. (Zenodo record [4008297](https://zenodo.org/records/4008297)), licensed **[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)**.
