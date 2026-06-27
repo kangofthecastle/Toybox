@@ -162,6 +162,47 @@ class TestClipPanelScroll(unittest.TestCase):
             "overflowing content should enable horizontal scrolling, "
             "got xview=%r" % ((first, last),))
 
+    @staticmethod
+    def _bar_shown(bar):
+        """True iff a scrollbar widget is currently shown in its section.
+
+        Prefer the realized mapping state (``winfo_ismapped``); but on builds
+        where the test toplevel never realizes mapping (everything reports 0),
+        fall back to the grid-management state -- a ``grid_remove``'d widget
+        reports ``winfo_manager() == ""`` while a gridded one reports "grid".
+        """
+        if bar.winfo_ismapped():
+            return True
+        # Distinguish "hidden because the toplevel isn't mapped" from "hidden
+        # because grid_remove() was called": the latter drops grid management.
+        return bool(bar.winfo_manager())
+
+    def test_short_content_hides_horizontal_scrollbar(self):
+        # The full-width stacked sections fit "hi" horizontally with room to
+        # spare -> the horizontal scrollbar should be removed, not just inert.
+        self.app.store.add("hi", 1000.0)
+        self._build()
+        self._refresh()
+        hsb = self.panel.all_canvas.hsb
+        self.assertFalse(
+            self._bar_shown(hsb),
+            "short content should hide the horizontal scrollbar; "
+            "ismapped=%r manager=%r"
+            % (hsb.winfo_ismapped(), hsb.winfo_manager()))
+
+    def test_overflow_content_shows_horizontal_scrollbar(self):
+        # A row far wider than the section -> the horizontal scrollbar must
+        # appear so the overflow is reachable.
+        self.app.store.add("x" * 400, 1000.0)
+        self._build()
+        self._refresh()
+        hsb = self.panel.all_canvas.hsb
+        self.assertTrue(
+            self._bar_shown(hsb),
+            "overflowing content should show the horizontal scrollbar; "
+            "ismapped=%r manager=%r"
+            % (hsb.winfo_ismapped(), hsb.winfo_manager()))
+
 
 if __name__ == "__main__":
     unittest.main()

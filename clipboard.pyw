@@ -225,10 +225,14 @@ class ClipPanel:
             # smaller, so the scrollregion never drops below the canvas size and
             # the scrollbars stay inert until content actually overflows.
             vw, vh = canvas.winfo_width(), canvas.winfo_height()
-            w = max(inner.winfo_reqwidth(), vw)
-            h = max(inner.winfo_reqheight(), vh)
-            canvas.itemconfigure(win_id, width=w, height=h)
-            canvas.configure(scrollregion=(0, 0, w, h))
+            rw, rh = inner.winfo_reqwidth(), inner.winfo_reqheight()
+            canvas.itemconfigure(win_id, width=max(rw, vw), height=max(rh, vh))
+            canvas.configure(scrollregion=(0, 0, max(rw, vw), max(rh, vh)))
+            # Show each scrollbar only when its axis actually overflows, so a
+            # section that fits (e.g. the full-width stacked sections, or any
+            # short list) shows no scrollbar instead of an inert one.
+            (hsb.grid if rw > vw else hsb.grid_remove)()
+            (vsb.grid if rh > vh else vsb.grid_remove)()
 
         inner.bind("<Configure>", _sync)
         canvas.bind("<Configure>", _sync)
@@ -255,6 +259,7 @@ class ClipPanel:
         for w in (canvas, inner):
             w.bind("<Enter>", on_enter)
             w.bind("<Leave>", on_leave)
+        canvas.hsb, canvas.vsb = hsb, vsb
         return inner, canvas
 
     def _place(self):
