@@ -246,6 +246,29 @@ class TestPinHelpers(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestWindowHelpers(unittest.TestCase):
+    def test_window_title_is_str(self):
+        import ctypes
+        import winkit.window as W
+        fg = ctypes.windll.user32.GetForegroundWindow()
+        self.assertIsInstance(W.window_title(fg), str)
+
+    def test_window_below_returns_int_and_restores_transparent(self):
+        import tkinter as tk
+        import winkit.window as W
+        root = tk.Tk(); root.withdraw()
+        root.geometry("80x80+150+150"); root.update()
+        hwnd = W._hwnd_of(root)
+        try:
+            res = W.window_below(hwnd)
+            self.assertIsInstance(res, int)
+            style = int(W._get(hwnd, W.GWL_EXSTYLE) or 0)
+            self.assertFalse(style & W.WS_EX_TRANSPARENT)   # probe restored the ex-style
+        finally:
+            root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestFileDropTarget(unittest.TestCase):
     def test_install_and_restore(self):
         import winkit.window as W

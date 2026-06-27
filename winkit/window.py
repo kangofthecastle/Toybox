@@ -54,6 +54,14 @@ _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 _user32.PostMessageW.restype = wintypes.BOOL
 _user32.PostMessageW.argtypes = [
     wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_user32.GetWindowRect.restype = wintypes.BOOL
+_user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_user32.GetDesktopWindow.restype = wintypes.HWND
+_user32.GetDesktopWindow.argtypes = []
+_user32.GetWindowTextLengthW.restype = ctypes.c_int
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowTextW.restype = ctypes.c_int
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 
 WM_NULL = 0x0000
 
@@ -150,3 +158,45 @@ def root_window_at(x, y):
         return 0
     root = _user32.GetAncestor(hwnd, GA_ROOT)
     return int(root or hwnd)
+
+
+def window_below(hwnd):
+    """The root window directly beneath `hwnd` at its center point, or 0 if there
+    is none, it resolves to the desktop, or it resolves back to `hwnd` itself.
+
+    `hwnd` (e.g. the cat) is a hit-testable top-most overlay, so a plain
+    WindowFromPoint at its center returns `hwnd`. Temporarily OR in
+    WS_EX_TRANSPARENT so hit-testing passes through it, read what's underneath,
+    then restore the original ex-style in a finally (never leave the cat
+    click-through). Does not move or hide the window."""
+    rect = wintypes.RECT()
+    if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return 0
+    cx = (rect.left + rect.right) // 2
+    cy = (rect.top + rect.bottom) // 2
+    style = int(_get(hwnd, GWL_EXSTYLE) or 0)
+    had_transparent = bool(style & WS_EX_TRANSPARENT)
+    if not had_transparent:
+        _set(hwnd, GWL_EXSTYLE, ctypes.c_void_p(style | WS_EX_TRANSPARENT))
+    try:
+        found = _user32.WindowFromPoint(wintypes.POINT(cx, cy))
+        if not found:
+            return 0
+        root = int(_user32.GetAncestor(found, GA_ROOT) or found)
+    finally:
+        if not had_transparent:
+            cur = int(_get(hwnd, GWL_EXSTYLE) or 0)
+            _set(hwnd, GWL_EXSTYLE, ctypes.c_void_p(cur & ~WS_EX_TRANSPARENT))
+    if root == int(hwnd) or root == int(_user32.GetDesktopWindow() or 0):
+        return 0
+    return root
+
+
+def window_title(hwnd):
+    """The window's title text (GetWindowTextW), or '' on failure/empty."""
+    length = _user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    got = _user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value if got else ""
