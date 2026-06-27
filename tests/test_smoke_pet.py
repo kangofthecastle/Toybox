@@ -139,5 +139,46 @@ class TestPetPinAndSupport(unittest.TestCase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestPetMenuSlim(unittest.TestCase):
+    def _make_cat(self):
+        import tkinter as tk
+        import winkit.window as window
+        import config
+        import pet as petmod
+        window.enable_dpi_awareness()
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.configure(bg=window.KEY_COLOR)
+        root.geometry("%dx%d+100+100" % (petmod.WIN, petmod.WIN))
+        canvas = tk.Canvas(root, width=petmod.WIN, height=petmod.WIN,
+                           bg=window.KEY_COLOR, highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+        root.update()
+        return root, petmod.Cat(root, canvas, config.defaults())
+
+    def test_menu_has_settings_and_no_checkbuttons(self):
+        import time
+        root, cat = self._make_cat()
+        try:
+            m = cat._build_menu(time.monotonic())
+            labels, has_check = [], False
+            for i in range(m.index("end") + 1):
+                t = m.type(i)
+                if t == "checkbutton":
+                    has_check = True
+                elif t == "command":
+                    labels.append(m.entrycget(i, "label"))
+            self.assertFalse(has_check)                                   # toggles moved to window
+            self.assertTrue(any("Settings" in s for s in labels))
+            self.assertTrue(any("Pin this window" in s for s in labels))
+            cat._open_settings("Focus")
+            self.assertIsNotNone(cat.settings.win)
+            cat._open_settings()                                         # singleton: still one window
+            cat.close()                                                  # closes the settings window too
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

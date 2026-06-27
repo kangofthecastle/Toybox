@@ -34,6 +34,7 @@ import petkit.pomodoro as pomodoro
 import petkit.reminders as reminders
 import petkit.nudges as nudges
 import petkit.pins as pins
+import petkit.settings as settings
 import winkit.dnd as dnd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -149,6 +150,7 @@ class Cat:
         self.drop_target = None
         self._tick_after = None
         self._next_topmost = 0.0          # low-rate cat top-most re-assert cursor
+        self.settings = None              # lazily-built Settings window (singleton)
         self._apply_pin_enabled()         # release pins if the feature is off
         self._apply_carry_enabled()       # install the drop target iff enabled
 
@@ -253,16 +255,6 @@ class Cat:
         self._held = []
 
     # --- right-click menu -----------------------------------------------
-    def _menu_var(self, key):
-        if not hasattr(self, "_menu_vars"):
-            self._menu_vars = {}
-        var = self._menu_vars.get(key)
-        if var is None:
-            var = tk.IntVar(self.root,
-                            value=1 if self.cfg["pet"].get(key, True) else 0)
-            self._menu_vars[key] = var
-        return var
-
     def _save_cfg(self):
         try:
             config.save(CFG_PATH, self.cfg)
@@ -297,63 +289,54 @@ class Cat:
         self.pomodoro.break_s = int(break_min) * 60
         self._save_cfg()
 
-    def _on_right_click(self, event):
+    def _build_menu(self, now):
+        """Build (but do not post) the slim right-click menu. Returned so it is
+        unit-testable; _on_right_click posts it. Toggles live in the Settings
+        window now -- this menu is actions only."""
         pet = self.cfg["pet"]
-        now = time.monotonic()
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="\U0001F431 Cat", state="disabled")
         m.add_separator()
-        # Focus / Pomodoro: start when idle, else pause/resume + stop.
         st = self.pomodoro.state
         if st == "idle":
-            m.add_command(label="Focus %d min" % int(pet.get("focus_min", 25)),
+            m.add_command(label="▶ Start Focus (%dm)" % int(pet.get("focus_min", 25)),
                           command=self._start_focus)
         else:
             mm, ss = divmod(int(max(0, self.pomodoro.remaining(now))), 60)
             if st == "paused":
-                m.add_command(label="Resume (%d:%02d)" % (mm, ss),
-                              command=self._resume_focus)
+                m.add_command(label="▶ Resume (%d:%02d)" % (mm, ss), command=self._resume_focus)
             else:
-                m.add_command(label="Pause (%d:%02d left)" % (mm, ss),
-                              command=self._pause_focus)
-            m.add_command(label="Stop focus", command=self._stop_focus)
-        # Reminders: add, plus a list/cancel submenu of pending ones.
-        m.add_command(label="Add reminder…", command=self._add_reminder_dialog)
-        pending = self.reminders.pending()
-        if pending:
-            sub = tk.Menu(m, tearoff=0)
-            for item in pending[:12]:
-                text = item["text"]
-                label = text if len(text) <= 28 else text[:27] + "…"
-                sub.add_command(label="✕ " + label,
-                                command=lambda t=text: self._cancel_reminder(t))
-            m.add_cascade(label="Reminders (%d)" % len(pending), menu=sub)
-        # Catch & Carry: when holding files, offer drop-to-clipboard / let-go.
+                m.add_command(label="⏸ Pause (%d:%02d)" % (mm, ss), command=self._pause_focus)
+            m.add_command(label="■ Stop focus", command=self._stop_focus)
+        m.add_command(label="⏰ Reminders…",
+                      command=lambda: self._open_settings("Reminders"))
+        if pet.get("pin", True):
+            target = window.window_below(self.hwnd)
+            pinned = bool(target) and self.pinset.is_pinned(target)
+            m.add_command(label="\U0001F4CC Unpin this window" if pinned else "\U0001F4CC Pin this window",
+                          command=self._pin_under_cat)
         if self._held:
-            m.add_command(label="Drop %d file(s) → clipboard" % len(self._held),
+            m.add_command(label="⤵ Drop %d file(s) → clipboard" % len(self._held),
                           command=self._release_held)
-            m.add_command(label="Let go",
-                          command=lambda: setattr(self, "_held", []))
-        # Pin: offer a bulk unpin when any windows are pinned.
+            m.add_command(label="Let go", command=lambda: setattr(self, "_held", []))
         if self.pinset.pinned():
-            m.add_command(label="Unpin all (%d)" % len(self.pinset.pinned()),
+            m.add_command(label="\U0001F4CC Unpin all (%d)" % len(self.pinset.pinned()),
                           command=self._unpin_all)
         m.add_separator()
-        for key, label in (("petting", "Petting & purr"),
-                           ("catnap", "Box catnap"),
-                           ("greeter", "Welcome-back greeting"),
-                           ("reminders", "Reminders"),
-                           ("nudges", "Break nudges"),
-                           ("pin", "Pin window (hotkey)"),
-                           ("carry", "Catch & carry files")):
-            m.add_checkbutton(label=label, onvalue=1, offvalue=0,
-                              variable=self._menu_var(key),
-                              command=lambda k=key: self._toggle_cfg(k))
-        m.add_separator()
+        m.add_command(label="⚙ Settings…", command=lambda: self._open_settings())
         m.add_command(label="Hide cat", command=self.root.destroy)
+        return m
+
+    def _open_settings(self, tab=None):
+        if self.settings is None:
+            self.settings = settings.SettingsWindow(self)
+        self.settings.open(tab)
+
+    def _on_right_click(self, event):
+        m = self._build_menu(time.monotonic())
         # The cat window is WS_EX_NOACTIVATE, so it never becomes foreground and a
-        # native popup menu it owns won't dismiss on an outside click (KB135788).
-        # Briefly bring it foreground around the (modal, on Windows) popup.
+        # native popup it owns won't dismiss on an outside click (KB135788). Briefly
+        # bring it foreground around the (modal, on Windows) popup.
         restore = window.foreground_for_popup(self.hwnd)
         try:
             m.tk_popup(event.x_root, event.y_root)
@@ -376,49 +359,6 @@ class Cat:
 
     def _stop_focus(self):
         self.pomodoro.cancel()
-
-    def _cancel_reminder(self, text):
-        self.reminders.cancel(text)
-        self.bubble.say("Reminder cleared", secs=2)
-
-    def _add_reminder_dialog(self):
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Add reminder")
-        dlg.attributes("-topmost", True)
-        dlg.resizable(False, False)
-        try:
-            dlg.geometry("+%d+%d" % (self.root.winfo_rootx(),
-                                     max(0, self.root.winfo_rooty() - 40)))
-        except tk.TclError:
-            pass
-        tk.Label(dlg, text="Remind me… (e.g. “drink water in 20m”)"
-                 ).pack(padx=10, pady=(10, 4))
-        entry = tk.Entry(dlg, width=36)
-        entry.pack(padx=10, pady=4)
-        entry.focus_set()
-
-        def submit(_event=None):
-            text = entry.get()
-            try:
-                dlg.destroy()
-            except tk.TclError:
-                pass
-            parsed = reminders.parse_reminder(text, time.time())
-            if parsed:
-                self.reminders.add(*parsed)
-                self.bubble.say("Reminder set \U0001F43E", secs=2)
-            else:
-                self.bubble.say("Couldn't read a time \U0001F63F", secs=3)
-
-        def cancel(_event=None):
-            try:
-                dlg.destroy()
-            except tk.TclError:
-                pass
-
-        tk.Button(dlg, text="OK", command=submit).pack(pady=(4, 10))
-        dlg.bind("<Return>", submit)
-        dlg.bind("<Escape>", cancel)
 
     # --- per-frame ------------------------------------------------------
     def _hop_offset(self, now):
@@ -655,6 +595,11 @@ class Cat:
         try:
             if getattr(self, "drop_target", None):
                 self.drop_target.close()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "settings", None):
+                self.settings.close()
         except Exception:
             pass
 
