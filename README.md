@@ -89,3 +89,7 @@ py -m unittest discover -s tests -t .
 ```
 
 Runs the pure-logic unit tests, real-system integration checks (metrics, clipboard, audio meter, registry round-trip, tray create/destroy), and a smoke launch of each toy (a window briefly appears and auto-closes).
+
+## Credits
+
+- `assets/meow.wav` — a single meow from the **CatMeows** dataset by L. Cavallini, S. Ntalampiras, et al. (Zenodo record [4008297](https://zenodo.org/records/4008297)), licensed **CC BY 4.0**.
