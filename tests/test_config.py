@@ -163,8 +163,7 @@ class TestConfig(unittest.TestCase):
         for key in ("pin", "carry"):
             self.assertIn(key, pet)
             self.assertIsInstance(pet[key], bool)
-        self.assertIn("pin_hotkey", pet)
-        self.assertIsInstance(pet["pin_hotkey"], list)
+        self.assertNotIn("pin_hotkey", pet)   # hotkey removed; pinning is cat-driven now
 
 
 if __name__ == "__main__":

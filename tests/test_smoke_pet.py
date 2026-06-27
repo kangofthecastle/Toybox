@@ -95,13 +95,12 @@ class TestPetPhase3Nudge(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
-class TestPetPhase4PinCarry(unittest.TestCase):
-    def test_cat_has_pin_carry_objects_and_ticks(self):
+class TestPetPinAndSupport(unittest.TestCase):
+    def _make_cat(self):
         import tkinter as tk
         import winkit.window as window
         import config
         import pet as petmod
-
         window.enable_dpi_awareness()
         root = tk.Tk()
         root.overrideredirect(True)
@@ -111,18 +110,31 @@ class TestPetPhase4PinCarry(unittest.TestCase):
                            bg=window.KEY_COLOR, highlightthickness=0, bd=0)
         canvas.pack(fill="both", expand=True)
         root.update()
+        return root, petmod.Cat(root, canvas, config.defaults())
+
+    def test_pin_and_support_methods(self):
+        root, cat = self._make_cat()
         try:
-            cat = petmod.Cat(root, canvas, config.defaults())
+            self.assertFalse(hasattr(cat, "pin_hotkey"))     # hotkey path removed
             self.assertTrue(hasattr(cat, "pinset"))
-            self.assertIsInstance(cat.hwnd, int)
-            self.assertNotEqual(cat.hwnd, 0)
-            # A drop holds the files; releasing clears the held list.
+            # Carry still works.
             cat._on_files_dropped(["C:\\a.txt", "C:\\b.txt"])
             self.assertEqual(cat._held, ["C:\\a.txt", "C:\\b.txt"])
             cat._release_held()
             self.assertEqual(cat._held, [])
-            cat.tick()                # one tick must run with the new wiring
-            cat.close()               # tears down poller/target/pins cleanly
+            # Cat-driven pin runs without crashing (no real window under the cat in CI).
+            cat._pin_under_cat()
+            # Focus minutes write through to the Pomodoro object + config.
+            cat._set_focus_minutes(40, 8)
+            self.assertEqual(cat.pomodoro.focus_s, 40 * 60)
+            self.assertEqual(cat.pomodoro.break_s, 8 * 60)
+            self.assertEqual(cat.cfg["pet"]["focus_min"], 40)
+            # Flag setter applies + persists; disabling pin releases pins.
+            cat._set_cfg_flag("pin", False)
+            self.assertFalse(cat.cfg["pet"]["pin"])
+            self.assertEqual(cat.pinset.pinned(), set())
+            cat.tick()
+            cat.close()
         finally:
             root.destroy()
 

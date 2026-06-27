@@ -140,16 +140,16 @@ class Cat:
         # Phase 3 "assistant" (cont.): activity-gated break nudges.
         self.nudger = nudges.NudgeScheduler(interval_s=int(pet.get("nudge_min", 50)) * 60)
 
-        # Phase 4 "power-tools": Pin (hotkey toggles any window always-on-top) and
-        # Catch & Carry (drop files on the cat; click to release as CF_HDROP).
-        # Both event-driven (hotkey edge / WM_DROPFILES) -- no per-frame cost.
+        # Phase 4 "power-tools": Pin (right-click the cat to pin the window under
+        # it; the cat stays on top) and Catch & Carry (drop files on the cat;
+        # click to release as CF_HDROP). Event-driven (menu / WM_DROPFILES).
         self.hwnd = window._hwnd_of(root)
         self.pinset = pins.PinSet(window.set_topmost)
         self._held = []                   # files the cat is currently carrying
-        self.pin_hotkey = None
         self.drop_target = None
         self._tick_after = None
-        self._apply_pin_enabled()         # install the hotkey poller iff enabled
+        self._next_topmost = 0.0          # low-rate cat top-most re-assert cursor
+        self._apply_pin_enabled()         # release pins if the feature is off
         self._apply_carry_enabled()       # install the drop target iff enabled
 
         self._drag_dx = self._drag_dy = 0
@@ -205,17 +205,11 @@ class Cat:
 
     # --- Pin + Catch & Carry (Phase 4) ----------------------------------
     def _apply_pin_enabled(self):
-        """Install/tear down the pin hotkey poller to match the config flag, so
-        toggling the menu item takes effect immediately (not on next restart)."""
-        on = self.cfg["pet"].get("pin", True)
-        if on and self.pin_hotkey is None:
-            self.pin_hotkey = wkinput.HotkeyPoller(
-                self.root, self.cfg["pet"].get("pin_hotkey") or ["ctrl", "shift", "P"],
-                self._toggle_pin)
-        elif not on and self.pin_hotkey is not None:
-            self.pin_hotkey.stop()
-            self.pin_hotkey = None
-            self.pinset.unpin_all()       # release whatever the cat was holding up
+        """Pinning is driven from the right-click menu (the window under the cat),
+        so there is no poller to install -- disabling the feature just releases
+        whatever the cat is currently holding up."""
+        if not self.cfg["pet"].get("pin", True):
+            self.pinset.unpin_all()
 
     def _apply_carry_enabled(self):
         """Install/tear down the WM_DROPFILES target to match the config flag."""
@@ -227,14 +221,18 @@ class Cat:
             self.drop_target = None
             self._held = []               # stop offering to drop stale files
 
-    def _toggle_pin(self):
+    def _pin_under_cat(self):
+        """Toggle always-on-top on the window directly beneath the cat. On pin,
+        re-raise the cat so it stays above the newly-pinned window."""
         if not self.cfg["pet"].get("pin", True):
             return
-        x, y = wkinput.cursor_pos()
-        hwnd = window.root_window_at(x, y)
-        if not hwnd or hwnd == self.hwnd:      # ignore empty desktop / the cat itself
+        hwnd = window.window_below(self.hwnd)
+        if not hwnd or hwnd == self.hwnd:
+            self.bubble.say("No window here \U0001F431", secs=2)
             return
         on = self.pinset.toggle(hwnd)
+        if on:
+            window.set_topmost(self.hwnd, True)    # keep the cat above the pin
         self.bubble.say("\U0001F4CC pinned" if on else "unpinned", secs=2)
 
     def _unpin_all(self):
@@ -265,20 +263,39 @@ class Cat:
             self._menu_vars[key] = var
         return var
 
-    def _toggle_cfg(self, key):
-        self.cfg["pet"][key] = not self.cfg["pet"].get(key, True)
-        self._menu_var(key).set(1 if self.cfg["pet"][key] else 0)
-        if key == "catnap":
-            self.nap.reset()          # clear any stale internal nap state
-            self.nap_state = "awake"
-        if key == "pin":
-            self._apply_pin_enabled()     # install/tear down the hotkey poller now
-        if key == "carry":
-            self._apply_carry_enabled()   # install/tear down the drop target now
+    def _save_cfg(self):
         try:
             config.save(CFG_PATH, self.cfg)
         except Exception:
             pass
+
+    def _set_cfg_flag(self, key, value):
+        """Set a boolean pet flag, run its live side effect, keep any menu var in
+        sync, and persist. Used by both the menu and the Settings window."""
+        value = bool(value)
+        self.cfg["pet"][key] = value
+        if getattr(self, "_menu_vars", None) and key in self._menu_vars:
+            self._menu_vars[key].set(1 if value else 0)
+        if key == "catnap":
+            self.nap.reset()
+            self.nap_state = "awake"
+        elif key == "pin":
+            self._apply_pin_enabled()
+        elif key == "carry":
+            self._apply_carry_enabled()
+        self._save_cfg()
+
+    def _toggle_cfg(self, key):
+        self._set_cfg_flag(key, not self.cfg["pet"].get(key, True))
+
+    def _set_focus_minutes(self, focus_min, break_min):
+        """Apply focus/break durations from the Settings window: persist and push
+        them into the live Pomodoro (taking effect on the next Start)."""
+        self.cfg["pet"]["focus_min"] = int(focus_min)
+        self.cfg["pet"]["break_min"] = int(break_min)
+        self.pomodoro.focus_s = int(focus_min) * 60
+        self.pomodoro.break_s = int(break_min) * 60
+        self._save_cfg()
 
     def _on_right_click(self, event):
         pet = self.cfg["pet"]
@@ -592,6 +609,13 @@ class Cat:
         if pet.get("nudges", True) and self.nudger.update(idle, now):
             self.bubble.say("Stretch break? \U0001F431", secs=4, chime=True)
 
+        # Keep the cat above any window it has pinned: a pinned window the user
+        # clicks would otherwise rise over it. Gated to when pins exist and
+        # rate-limited to ~1/s; SWP_NOACTIVATE -> no focus theft, no flicker.
+        if self.pinset.pinned() and now >= self._next_topmost:
+            self._next_topmost = now + 1.0
+            window.set_topmost(self.hwnd, True)
+
         try:
             self.draw(now)
         except tk.TclError:
@@ -623,11 +647,6 @@ class Cat:
         except Exception:
             pass
         # Phase 4: tear down native power-tool resources so quitting is clean.
-        try:
-            if getattr(self, "pin_hotkey", None):
-                self.pin_hotkey.stop()
-        except Exception:
-            pass
         try:
             if getattr(self, "pinset", None):
                 self.pinset.unpin_all()
