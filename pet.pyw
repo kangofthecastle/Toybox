@@ -277,9 +277,6 @@ class Cat:
             self._apply_carry_enabled()
         self._save_cfg()
 
-    def _toggle_cfg(self, key):
-        self._set_cfg_flag(key, not self.cfg["pet"].get(key, True))
-
     def _set_focus_minutes(self, focus_min, break_min):
         """Apply focus/break durations from the Settings window: persist and push
         them into the live Pomodoro (taking effect on the next Start)."""
