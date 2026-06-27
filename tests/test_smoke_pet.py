@@ -180,5 +180,39 @@ class TestPetMenuSlim(unittest.TestCase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestPetFocusBadge(unittest.TestCase):
+    def _make_cat(self):
+        import tkinter as tk
+        import winkit.window as window
+        import config
+        import pet as petmod
+        window.enable_dpi_awareness()
+        root = tk.Tk()
+        root.overrideredirect(True)
+        root.configure(bg=window.KEY_COLOR)
+        root.geometry("%dx%d+100+100" % (petmod.WIN, petmod.WIN))
+        canvas = tk.Canvas(root, width=petmod.WIN, height=petmod.WIN,
+                           bg=window.KEY_COLOR, highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+        root.update()
+        return root, petmod.Cat(root, canvas, config.defaults())
+
+    def test_badge_shows_during_focus_and_hides_when_idle(self):
+        root, cat = self._make_cat()
+        try:
+            self.assertTrue(hasattr(cat, "timerbadge"))
+            cat._start_focus()
+            self.assertEqual(cat.pomodoro.state, "focus")
+            cat.tick()                              # one tick with focus running
+            self.assertTrue(cat.timerbadge._shown)  # badge became visible
+            cat._stop_focus()
+            cat.tick()                              # idle tick hides it
+            self.assertFalse(cat.timerbadge._shown)
+            cat.close()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

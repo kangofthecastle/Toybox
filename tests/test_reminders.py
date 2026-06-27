@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -62,16 +63,16 @@ class TestStore(unittest.TestCase):
     def test_add_persists_and_reloads(self):
         Reminders(self.path).add("water", 5000)
         self.assertEqual(Reminders(self.path).pending(),
-                         [{"text": "water", "due": 5000}])
+                         [{"text": "water", "due": 5000, "repeat": "none"}])
 
     def test_due_fires_and_removes(self):
         r = Reminders(self.path)
         r.add("a", 100)
         r.add("b", 300)
         self.assertEqual(r.due(now_epoch=200), ["a"])
-        self.assertEqual(r.pending(), [{"text": "b", "due": 300}])
+        self.assertEqual(r.pending(), [{"text": "b", "due": 300, "repeat": "none"}])
         self.assertEqual(Reminders(self.path).pending(),   # persisted
-                         [{"text": "b", "due": 300}])
+                         [{"text": "b", "due": 300, "repeat": "none"}])
 
     def test_corrupt_file_is_empty(self):
         with open(self.path, "w", encoding="utf-8") as f:
@@ -165,3 +166,74 @@ class TestReminderRemove(unittest.TestCase):
         r.add("ping", 1000)
         r.remove("ping", 9999)
         self.assertEqual(len(r.pending()), 1)
+
+
+class TestRecurringReminders(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(); self.path = os.path.join(self.dir, "r.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_advance_daily_next_future_slot(self):
+        self.assertEqual(reminders.advance_daily(1000, 1000), 1000 + 86400)
+        self.assertEqual(reminders.advance_daily(1000, 999), 1000)            # already future
+        self.assertEqual(reminders.advance_daily(1000, 1000 + 86400), 1000 + 2 * 86400)
+
+    def test_add_defaults_one_time(self):
+        r = reminders.Reminders(self.path)
+        r.add("ping", 1000)
+        self.assertEqual(r.pending()[0]["repeat"], "none")
+
+    def test_add_daily_stored(self):
+        r = reminders.Reminders(self.path)
+        r.add("standup", 1000, repeat="daily")
+        self.assertEqual(r.pending()[0]["repeat"], "daily")
+
+    def test_add_unknown_repeat_coerced(self):
+        r = reminders.Reminders(self.path)
+        r.add("x", 1000, repeat="weekly")
+        self.assertEqual(r.pending()[0]["repeat"], "none")
+
+    def test_due_one_time_removed(self):
+        r = reminders.Reminders(self.path)
+        r.add("once", 1000, repeat="none")
+        self.assertEqual(r.due(2000), ["once"])
+        self.assertEqual(r.pending(), [])
+
+    def test_due_daily_reschedules_and_keeps(self):
+        r = reminders.Reminders(self.path)
+        r.add("standup", 1000, repeat="daily")
+        self.assertEqual(r.due(1000), ["standup"])
+        pend = r.pending()
+        self.assertEqual(len(pend), 1)
+        self.assertEqual(pend[0]["due"], 1000 + 86400)
+        self.assertEqual(pend[0]["repeat"], "daily")
+
+    def test_due_daily_far_past_fires_once_into_future(self):
+        r = reminders.Reminders(self.path)
+        r.add("daily", 1000, repeat="daily")
+        now = 1000 + 5 * 86400 + 17                       # 5+ days later
+        self.assertEqual(r.due(now), ["daily"])           # fires exactly once
+        self.assertEqual(len(r.pending()), 1)
+        self.assertGreater(r.pending()[0]["due"], now)    # landed in the future
+
+    def test_due_daily_persists_reschedule(self):
+        r = reminders.Reminders(self.path)
+        r.add("standup", 1000, repeat="daily")
+        r.due(1000)
+        reloaded = reminders.Reminders(self.path)
+        self.assertEqual(reloaded.pending()[0]["due"], 1000 + 86400)
+        self.assertEqual(reloaded.pending()[0]["repeat"], "daily")
+
+    def test_load_backcompat_missing_repeat(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump([{"text": "old", "due": 1000}], f)   # legacy item, no repeat
+        r = reminders.Reminders(self.path)
+        self.assertEqual(r.pending()[0]["repeat"], "none")
+
+    def test_load_bad_repeat_coerced(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump([{"text": "x", "due": 1000, "repeat": "weekly"}], f)
+        r = reminders.Reminders(self.path)
+        self.assertEqual(r.pending()[0]["repeat"], "none")

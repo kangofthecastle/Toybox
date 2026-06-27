@@ -47,3 +47,21 @@ class TestSettingsWindow(unittest.TestCase):
             cat.close()
         finally:
             root.destroy()
+
+    def test_daily_reminder_add_and_marker(self):
+        import petkit.settings as settings
+        root, cat = self._make_cat()
+        try:
+            win = settings.SettingsWindow(cat)
+            win.open("Reminders")
+            win._mode_var.set("at"); win._hh_var.set("9"); win._mm_var.set("0")
+            win._repeat_var.set(1)
+            win._msg_var.set("standup"); win._on_add_reminder()
+            pend = cat.reminders.pending()
+            self.assertTrue(any(i["text"] == "standup" and i["repeat"] == "daily"
+                                for i in pend))
+            win._refresh_reminders()        # daily-marker render path, must not raise
+            win.close()
+            cat.close()
+        finally:
+            root.destroy()

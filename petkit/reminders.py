@@ -110,6 +110,16 @@ def format_due(due_epoch, now_epoch):
     return time.strftime("%a", due) + " " + clock
 
 
+def advance_daily(due, now):
+    """Next daily occurrence strictly after `now`, stepping 24h from `due`. Pure.
+    Reschedules a fired daily reminder; if the app was off for days it jumps to
+    the next future slot (fires once, not once per missed day)."""
+    due, now = int(due), int(now)
+    while due <= now:
+        due += 86400
+    return due
+
+
 class Reminders:
     def __init__(self, path):
         self.path = path
@@ -128,7 +138,11 @@ class Reminders:
             if (isinstance(it, dict) and isinstance(it.get("text"), str)
                     and isinstance(it.get("due"), (int, float))
                     and not isinstance(it.get("due"), bool)):
-                out.append({"text": it["text"], "due": int(it["due"])})
+                repeat = it.get("repeat")
+                if repeat not in ("none", "daily"):
+                    repeat = "none"
+                out.append({"text": it["text"], "due": int(it["due"]),
+                            "repeat": repeat})
         return out
 
     def _save(self):
@@ -145,19 +159,33 @@ class Reminders:
                 pass
             raise
 
-    def add(self, text, due_epoch):
-        self._items.append({"text": text, "due": int(due_epoch)})
+    def add(self, text, due_epoch, repeat="none"):
+        if repeat != "daily":
+            repeat = "none"
+        self._items.append({"text": text, "due": int(due_epoch),
+                            "repeat": repeat})
         self._save()
 
     def pending(self):
         return [dict(i) for i in sorted(self._items, key=lambda i: i["due"])]
 
     def due(self, now_epoch):
-        fired = [i for i in self._items if i["due"] <= now_epoch]
-        if fired:
-            self._items = [i for i in self._items if i["due"] > now_epoch]
-            self._save()
-        return [i["text"] for i in sorted(fired, key=lambda i: i["due"])]
+        fired = sorted((i for i in self._items if i["due"] <= now_epoch),
+                       key=lambda i: i["due"])
+        if not fired:
+            return []
+        texts = [i["text"] for i in fired]            # capture order before mutating
+        kept = []
+        for i in self._items:
+            if i["due"] > now_epoch:
+                kept.append(i)
+            elif i.get("repeat") == "daily":
+                i["due"] = advance_daily(i["due"], now_epoch)
+                kept.append(i)
+            # else: one-time fired -> dropped
+        self._items = kept
+        self._save()
+        return texts
 
     def cancel(self, text):
         before = len(self._items)

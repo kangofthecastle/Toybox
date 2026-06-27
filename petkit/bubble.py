@@ -5,6 +5,7 @@ re-renders the text on its canvas, repositions the window above the pet, and
 (re)schedules an auto-hide. The bubble is never created/destroyed per message.
 Stdlib only (tkinter + winsound)."""
 
+import os
 import tkinter as tk
 import tkinter.font as tkfont
 import winsound
@@ -13,6 +14,8 @@ import winkit.window as window
 PAD = 8
 BUBBLE_FILL = "#fffbe6"
 TEXT_FILL = "#202020"
+_MEOW = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "assets", "meow.wav"))
 
 
 def bubble_xy(root_x, root_y, root_w, head_offset, w, h, gap=PAD):
@@ -62,7 +65,9 @@ class Bubble:
         self.win.lift()
         if chime:
             try:
-                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                winsound.PlaySound(
+                    _MEOW,
+                    winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
             except Exception:
                 pass
         if self._hide_id is not None:

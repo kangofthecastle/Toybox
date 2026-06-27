@@ -30,6 +30,7 @@ import petkit.glow as glow
 import petkit.reactions as reactions
 import petkit.greeter as greeter
 import petkit.bubble as bubble
+import petkit.timerbadge as timerbadge
 import petkit.pomodoro as pomodoro
 import petkit.reminders as reminders
 import petkit.nudges as nudges
@@ -125,6 +126,7 @@ class Cat:
         # (the eyes are at row ~12), so the bubble tucks just over the cat.
         head_y = int(self.base_y - self.sprite_px + 6 * self.zoom)
         self.bubble = bubble.Bubble(root, head_offset=head_y)
+        self.timerbadge = timerbadge.TimerBadge(root, head_offset=head_y)
         self.nap_state = "awake"
         self.nap_frame_i = 0
         self.nap_frame_t = self.t0
@@ -536,6 +538,12 @@ class Cat:
         elif ev == "break_done":
             self.bubble.say("Back to it? \U0001F431", secs=4, chime=True)
 
+        st = self.pomodoro.state
+        if st in ("focus", "break", "paused"):
+            self.timerbadge.show(timerbadge.badge_text(st, self.pomodoro.remaining(now)))
+        else:
+            self.timerbadge.hide()
+
         # Reminders, low-rate (<=1/5s); fired reminders use wall-clock epoch.
         if pet.get("reminders", True) and now >= self._next_reminder_check:
             self._next_reminder_check = now + 5.0
@@ -597,6 +605,11 @@ class Cat:
         try:
             if getattr(self, "settings", None):
                 self.settings.close()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "timerbadge", None):
+                self.timerbadge.destroy()
         except Exception:
             pass
 

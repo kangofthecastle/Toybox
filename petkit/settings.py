@@ -152,6 +152,8 @@ class SettingsWindow:
         tk.Spinbox(atrow, from_=0, to=23, width=3, textvariable=self._hh_var).pack(side="left", padx=2)
         tk.Label(atrow, text=":").pack(side="left")
         tk.Spinbox(atrow, from_=0, to=59, width=3, textvariable=self._mm_var).pack(side="left", padx=2)
+        self._repeat_var = tk.IntVar(value=0)
+        tk.Checkbutton(atrow, text="daily", variable=self._repeat_var).pack(side="left", padx=(8, 0))
         tk.Button(atrow, text="Add", command=self._on_add_reminder).pack(side="left", padx=8)
         tk.Label(f, textvariable=self._rem_status, fg="#c33").pack(anchor="w", padx=10)
         tk.Frame(f, height=1, bg="#ccc").pack(fill="x", padx=10, pady=4)
@@ -169,7 +171,8 @@ class SettingsWindow:
         if due is None:
             self._rem_status.set("couldn't read that time"); return
         self._rem_status.set("")
-        self.cat.reminders.add(self._msg_var.get().strip() or "Reminder", due)
+        repeat = "daily" if self._repeat_var.get() else "none"
+        self.cat.reminders.add(self._msg_var.get().strip() or "Reminder", due, repeat)
         self._msg_var.set("")
         self._refresh_reminders()
 
@@ -187,8 +190,10 @@ class SettingsWindow:
             row = tk.Frame(self._rem_list); row.pack(fill="x", pady=1)
             tk.Button(row, text="✕", width=2,
                       command=lambda it=item: self._remove_reminder(it)).pack(side="right")
-            tk.Label(row, text=reminders.format_due(item["due"], now), fg="#666").pack(side="right", padx=6)
-            tk.Label(row, text="• " + item["text"], anchor="w").pack(side="left")
+            daily = item.get("repeat") == "daily"
+            when = ("daily " if daily else "") + reminders.format_due(item["due"], now)
+            tk.Label(row, text=when, fg="#666").pack(side="right", padx=6)
+            tk.Label(row, text=("↻ " if daily else "• ") + item["text"], anchor="w").pack(side="left")
 
     def _remove_reminder(self, item):
         self.cat.reminders.remove(item["text"], item["due"])
