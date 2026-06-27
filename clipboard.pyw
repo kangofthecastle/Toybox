@@ -56,6 +56,8 @@ TEAL = "#4ac4c4"
 STAR_ON = "#ffce4d"
 STAR_OFF = "#70747a"
 DEL_HOVER = "#e0695f"
+CURRENT_BG = "#243b3b"   # teal-tinted row bg for the live-clipboard entry
+CURRENT_BAR = TEAL       # left accent bar for the live-clipboard entry
 
 COL_W = 300
 
@@ -82,6 +84,7 @@ class ClipPanel:
         self._anchor = None      # index in the current ALL view (for shift-select)
         self._all_texts = []     # texts currently shown in ALL (view order)
         self._suppress_close = False  # set while the options menu is open
+        self._current = None     # text of the live system clipboard (for highlight)
         self.layout = clip_view.normalize_layout(app.cfg["clipboard"]["layout"])
         self.panel_w, self.panel_h = clip_view.panel_size(self.layout)
 
@@ -252,6 +255,7 @@ class ClipPanel:
     # -- rendering --------------------------------------------------------
     def refresh(self):
         needle = self.search_var.get().lower()
+        self._current = self._current_clip()
         for inner in (self.all_inner, self.fav_inner):
             for child in inner.winfo_children():
                 child.destroy()
@@ -281,20 +285,27 @@ class ClipPanel:
         tk.Label(parent, text="  " + msg, bg=COL_BG, fg=DIM,
                  anchor="w", font=("Segoe UI", 9, "italic")).pack(fill="x", pady=6)
 
-    def _row_frame(self, parent, text):
-        bg = SEL_BG if text in self._selected else COL_BG
+    def _base_bg(self, text, is_current):
+        if text in self._selected:
+            return SEL_BG
+        if is_current:
+            return CURRENT_BG
+        return COL_BG
+
+    def _row_frame(self, parent, text, is_current):
+        bg = self._base_bg(text, is_current)
         row = tk.Frame(parent, bg=bg)
         row.pack(fill="x", pady=1)
-        accent = tk.Frame(row, bg=bg, width=3)
+        accent = tk.Frame(row, bg=(CURRENT_BAR if is_current else bg), width=3)
         accent.pack(side="left", fill="y")
 
         def hover(on):
-            b = ROW_HOVER if on else (SEL_BG if text in self._selected else COL_BG)
+            b = ROW_HOVER if on else self._base_bg(text, is_current)
             row.config(bg=b)
             for c in row.winfo_children():
                 if isinstance(c, tk.Label):
                     c.config(bg=b)
-            accent.config(bg=b)
+            accent.config(bg=(CURRENT_BAR if is_current else b))
         row.bind("<Enter>", lambda e: hover(True))
         row.bind("<Leave>", lambda e: hover(False))
         return row, bg
@@ -324,7 +335,8 @@ class ClipPanel:
 
     def _all_row(self, index, entry, now):
         text = entry["text"]
-        row, bg = self._row_frame(self.all_inner, text)
+        is_current = (text == self._current)
+        row, bg = self._row_frame(self.all_inner, text, is_current)
         chk = tk.Label(row, text="☑" if text in self._selected else "☐", bg=bg,
                        fg=TEAL if text in self._selected else STAR_OFF,
                        font=("Segoe UI", 10), cursor="hand2")
@@ -341,7 +353,8 @@ class ClipPanel:
 
     def _fav_row(self, entry, now):
         text = entry["text"]
-        row, bg = self._row_frame(self.fav_inner, text)
+        is_current = (text == self._current)
+        row, bg = self._row_frame(self.fav_inner, text, is_current)
         self._icon_btn(row, "★", STAR_ON, bg, lambda t=text: self._unfavorite(t))
         self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
         self._time_lbl(row, entry, bg)
@@ -362,6 +375,13 @@ class ClipPanel:
                             fg=(TEAL if on else DIM))
 
     # -- actions ----------------------------------------------------------
+    def _current_clip(self):
+        try:
+            t = self.app.root.clipboard_get()
+        except tk.TclError:
+            return None
+        return t if t and t.strip() else None
+
     def _copy_and_close(self, text):
         try:
             self.app.root.clipboard_clear()
@@ -607,10 +627,15 @@ class ClipboardApp:
 
 
 def _smoke_exercise(app):
-    """Open the panel during a smoke run, then toggle its layout, so both
-    layouts' build paths execute."""
+    """Seed a long entry, point the live clipboard at it (highlight path), open
+    the panel, then toggle its layout — so every new build path executes."""
     long_text = "lorem ipsum dolor sit amet " * 8  # ~216 chars, one line
     app.store.add(long_text, time.time())
+    try:
+        app.root.clipboard_clear()
+        app.root.clipboard_append(long_text)
+    except tk.TclError:
+        pass
     app.open_panel()
     panel = app.panel
     if panel is not None:
