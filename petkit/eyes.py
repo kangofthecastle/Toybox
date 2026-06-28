@@ -31,6 +31,27 @@ def pupil_offset(dx, dy, reach=55.0, max_off=1.4):
     return (dx * f, dy * f)
 
 
+def pupil_dot_offset(dx, dy, base, dot, step, reach=55.0, max_off=1.4):
+    """Block-local top-left (ldx, ldy) of the white catchlight dot within an
+    eye's ``base``x``base`` block, for a gaze vector (dx, dy) in screen px from
+    the eye/reference center to the cursor.
+
+    The ``dot``-px-square dot is centered in the block, floated toward the
+    cursor by ``pupil_offset``, clamped to stay fully inside the block, then
+    snapped to a ``step``-px grid so the gaze reads pixel-art-steppy. Pure and
+    deterministic: identical inputs give identical output, so feeding both eyes
+    the same gaze vector keeps the pupils in lockstep.
+    """
+    ox, oy = pupil_offset(dx, dy, reach, max_off)
+    ldx = int(round(base / 2.0 + ox - dot / 2.0))
+    ldy = int(round(base / 2.0 + oy - dot / 2.0))
+    ldx = min(max(ldx, 0), base - dot)
+    ldy = min(max(ldy, 0), base - dot)
+    ldx = int(round(ldx / step)) * step
+    ldy = int(round(ldy / step)) * step
+    return (ldx, ldy)
+
+
 EYES = {
     # Faithful to assets/cat/Idle.png (10 frames). Each open eye is a 2x2 block
     # whose TOP-LEFT corner is given below: LEFT eye x=6, RIGHT eye x=13.
