@@ -10,9 +10,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def run_smoke(script_name, timeout_ms=1500):
+def run_smoke(script_name, timeout_ms=1500, extra_env=None):
     env = dict(os.environ)
     env["TOYBOX_SMOKE"] = str(timeout_ms)
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run(
         [sys.executable, os.path.join(ROOT, script_name)],
         cwd=ROOT,

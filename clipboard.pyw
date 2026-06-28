@@ -19,6 +19,7 @@ import tkinter as tk
 import winkit.window as window
 import winkit.input as wkinput
 import clip_store
+import clip_view
 import config
 import timeago
 from selection import shift_range
@@ -55,24 +56,15 @@ TEAL = "#4ac4c4"
 STAR_ON = "#ffce4d"
 STAR_OFF = "#70747a"
 DEL_HOVER = "#e0695f"
+CURRENT_BG = "#243b3b"   # teal-tinted row bg for the live-clipboard entry
+CURRENT_BAR = TEAL       # left accent bar for the live-clipboard entry
 
 COL_W = 300
-PANEL_W = 632
-PANEL_H = 420
-LINE_CAP = 46
 
 
 def _smoke_ms():
     v = os.environ.get("TOYBOX_SMOKE")
     return int(v) if v else None
-
-
-def _one_line(text):
-    flat = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ⏎ ")
-    flat = flat.replace("\t", " ").strip()
-    if len(flat) > LINE_CAP:
-        flat = flat[:LINE_CAP - 1] + "…"
-    return flat or "⏎"
 
 
 def _round_rect(canvas, x0, y0, x1, y1, r, **kw):
@@ -92,6 +84,9 @@ class ClipPanel:
         self._anchor = None      # index in the current ALL view (for shift-select)
         self._all_texts = []     # texts currently shown in ALL (view order)
         self._suppress_close = False  # set while the options menu is open
+        self._current = None     # text of the live system clipboard (for highlight)
+        self.layout = clip_view.normalize_layout(app.cfg["clipboard"]["layout"])
+        self.panel_w, self.panel_h = clip_view.panel_size(self.layout)
 
         win = tk.Toplevel(app.root)
         self.win = win
@@ -99,21 +94,19 @@ class ClipPanel:
         win.configure(bg=BORDER)
         win.attributes("-topmost", True)
 
-        outer = tk.Frame(win, bg=PANEL_BG)
-        outer.pack(fill="both", expand=True, padx=1, pady=1)
+        self.outer = tk.Frame(win, bg=PANEL_BG)
+        self.outer.pack(fill="both", expand=True, padx=1, pady=1)
 
-        self._build_header(outer)
-        body = tk.Frame(outer, bg=PANEL_BG)
-        body.pack(fill="both", expand=True, padx=8, pady=(0, 6))
-        self.all_inner = self._build_column(body, "ALL", side="left")
-        self.fav_inner = self._build_column(body, "FAVORITES", side="right")
+        self._build_header(self.outer)
 
-        self.footer = tk.Frame(outer, bg=PANEL_BG, height=34)
-        self.footer.pack(fill="x", padx=8, pady=(0, 8))
+        self.footer = tk.Frame(self.outer, bg=PANEL_BG, height=34)
+        self.footer.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
         self.remove_btn = tk.Label(
             self.footer, text="", bg="#4a2b2b", fg="#ffd9d4",
             font=("Segoe UI", 9, "bold"), padx=10, pady=4, cursor="hand2")
         self.remove_btn.bind("<Button-1>", lambda e: self._remove_selected())
+
+        self._build_body()
 
         win.bind("<Escape>", lambda e: self.close())
         win.bind("<FocusOut>", self._on_focus_out)
@@ -149,6 +142,14 @@ class ClipPanel:
         burger.bind("<Enter>", lambda e: burger.config(fg=FG))
         burger.bind("<Leave>", lambda e: burger.config(fg=DIM))
 
+        self.layout_btn = tk.Label(hdr, bg=PANEL_BG, fg=DIM,
+                                   font=("Segoe UI", 12), cursor="hand2")
+        self.layout_btn.pack(side="right", padx=(0, 8))
+        self.layout_btn.bind("<Button-1>", lambda e: self._toggle_layout())
+        self.layout_btn.bind("<Enter>", lambda e: self.layout_btn.config(fg=FG))
+        self.layout_btn.bind("<Leave>", lambda e: self.layout_btn.config(fg=DIM))
+        self._render_layout_btn()
+
         self.search_var = tk.StringVar()
         self.search = tk.Entry(hdr, textvariable=self.search_var, bg=ENTRY_BG,
                                fg=FG, insertbackground=FG, relief="flat",
@@ -157,46 +158,128 @@ class ClipPanel:
         self.search.pack(side="right", padx=8, ipady=3, fill="x", expand=True)
         self.search_var.trace_add("write", lambda *_: self.refresh())
 
-    def _build_column(self, parent, title, side):
-        col = tk.Frame(parent, bg=COL_BG, width=COL_W)
-        col.pack(side=side, fill="both", expand=True, padx=(0, 6) if side == "left" else (6, 0))
-        col.pack_propagate(False)
+    def _build_body(self):
+        self.body = tk.Frame(self.outer, bg=PANEL_BG)
+        self.body.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        if self.layout == "stacked":
+            self.all_inner, self.all_canvas = self._build_column(
+                self.body, "ALL", "top", False)
+            self.fav_inner, self.fav_canvas = self._build_column(
+                self.body, "FAVORITES", "bottom", False)
+        else:
+            self.all_inner, self.all_canvas = self._build_column(
+                self.body, "ALL", "left", True)
+            self.fav_inner, self.fav_canvas = self._build_column(
+                self.body, "FAVORITES", "right", True)
+
+    def _render_layout_btn(self):
+        # Glyph reflects the CURRENT layout: stacked rows vs. side-by-side columns.
+        self.layout_btn.config(text="▤" if self.layout == "stacked" else "▥")
+
+    def _rebuild_body(self):
+        try:
+            self.win.unbind_all("<MouseWheel>")
+            self.win.unbind_all("<Shift-MouseWheel>")
+        except tk.TclError:
+            pass
+        try:
+            self.body.destroy()
+        except tk.TclError:
+            pass
+        self._build_body()
+        self.refresh()
+
+    def _toggle_layout(self):
+        self.layout = clip_view.next_layout(self.layout)
+        self.app.cfg["clipboard"]["layout"] = self.layout
+        self.app.save_cfg()
+        self.panel_w, self.panel_h = clip_view.panel_size(self.layout)
+        self._place()
+        self._rebuild_body()
+        self._render_layout_btn()
+
+    def _build_column(self, parent, title, side, fixed_width):
+        col = tk.Frame(parent, bg=COL_BG)
+        if fixed_width:
+            col.configure(width=COL_W)
+            col.pack(side=side, fill="both", expand=True,
+                     padx=(0, 6) if side == "left" else (6, 0))
+            col.pack_propagate(False)
+        else:
+            col.pack(side=side, fill="both", expand=True,
+                     pady=(0, 6) if side == "top" else (6, 0))
         tk.Label(col, text=title, bg=COL_BG, fg=DIM, anchor="w",
                  font=("Segoe UI", 8, "bold")).pack(fill="x", padx=8, pady=(6, 2))
-        canvas = tk.Canvas(col, bg=COL_BG, highlightthickness=0)
-        sb = tk.Scrollbar(col, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=COL_BG)
-        canvas.create_window((0, 0), window=inner, anchor="nw", width=COL_W - 16)
-        canvas.configure(yscrollcommand=sb.set)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
 
-        def wheel(e):
+        wrap = tk.Frame(col, bg=COL_BG)
+        wrap.pack(fill="both", expand=True)
+        canvas = tk.Canvas(wrap, bg=COL_BG, highlightthickness=0)
+        vsb = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        hsb = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview)
+        inner = tk.Frame(canvas, bg=COL_BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        def _sync(_e=None):
+            # Stretch the inner frame to fill the viewport when its content is
+            # smaller, so the scrollregion never drops below the canvas size and
+            # the scrollbars stay inert until content actually overflows.
+            vw, vh = canvas.winfo_width(), canvas.winfo_height()
+            rw, rh = inner.winfo_reqwidth(), inner.winfo_reqheight()
+            canvas.itemconfigure(win_id, width=max(rw, vw), height=max(rh, vh))
+            canvas.configure(scrollregion=(0, 0, max(rw, vw), max(rh, vh)))
+            # Show each scrollbar only when its axis actually overflows, so a
+            # section that fits (e.g. the full-width stacked sections, or any
+            # short list) shows no scrollbar instead of an inert one.
+            (hsb.grid if rw > vw else hsb.grid_remove)()
+            (vsb.grid if rh > vh else vsb.grid_remove)()
+
+        inner.bind("<Configure>", _sync)
+        canvas.bind("<Configure>", _sync)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        wrap.rowconfigure(0, weight=1)
+        wrap.columnconfigure(0, weight=1)
+
+        def vwheel(e):
             canvas.yview_scroll(int(-e.delta / 120), "units")
+
+        def hwheel(e):
+            canvas.xview_scroll(int(-e.delta / 120), "units")
+
+        def on_enter(e, c=canvas, v=vwheel, h=hwheel):
+            c.bind_all("<MouseWheel>", v)
+            c.bind_all("<Shift-MouseWheel>", h)
+
+        def on_leave(e, c=canvas):
+            c.unbind_all("<MouseWheel>")
+            c.unbind_all("<Shift-MouseWheel>")
+
         for w in (canvas, inner):
-            w.bind("<Enter>", lambda e, c=canvas: c.bind_all("<MouseWheel>", wheel))
-            w.bind("<Leave>", lambda e, c=canvas: c.unbind_all("<MouseWheel>"))
-        return inner
+            w.bind("<Enter>", on_enter)
+            w.bind("<Leave>", on_leave)
+        canvas.hsb, canvas.vsb = hsb, vsb
+        return inner, canvas
 
     def _place(self):
         self.win.update_idletasks()
         ix, iy = self.app.root.winfo_x(), self.app.root.winfo_y()
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
         x = ix + ICON + 8
-        if x + PANEL_W > sw:
-            x = ix - PANEL_W - 8
-        x = max(8, min(x, sw - PANEL_W - 8))
-        y = max(8, min(iy, sh - PANEL_H - 8))
-        self.win.geometry("%dx%d+%d+%d" % (PANEL_W, PANEL_H, x, y))
+        if x + self.panel_w > sw:
+            x = ix - self.panel_w - 8
+        x = max(8, min(x, sw - self.panel_w - 8))
+        y = max(8, min(iy, sh - self.panel_h - 8))
+        self.win.geometry("%dx%d+%d+%d" % (self.panel_w, self.panel_h, x, y))
 
     # -- rendering --------------------------------------------------------
     def refresh(self):
         needle = self.search_var.get().lower()
+        self._current = self._current_clip()
         for inner in (self.all_inner, self.fav_inner):
             for child in inner.winfo_children():
                 child.destroy()
-        now = time.time()
 
         recent = [e for e in self.store.recent() if needle in e["text"].lower()]
         favs = [e for e in self.store.favorites() if needle in e["text"].lower()]
@@ -206,55 +289,74 @@ class ClipPanel:
         if not recent:
             self._empty(self.all_inner, "nothing copied yet" if not needle else "no matches")
         for i, e in enumerate(recent):
-            self._all_row(i, e, now)
+            self._all_row(i, e)
         if not favs:
             self._empty(self.fav_inner, "star items to keep them" if not needle else "no matches")
         for e in favs:
-            self._fav_row(e, now)
+            self._fav_row(e)
         self._render_remove()
+        for c in (self.all_canvas, self.fav_canvas):
+            try:
+                c.xview_moveto(0)
+            except tk.TclError:
+                pass
 
     def _empty(self, parent, msg):
         tk.Label(parent, text="  " + msg, bg=COL_BG, fg=DIM,
                  anchor="w", font=("Segoe UI", 9, "italic")).pack(fill="x", pady=6)
 
-    def _row_frame(self, parent, text):
-        row = tk.Frame(parent, bg=COL_BG)
+    def _base_bg(self, text, is_current):
+        if text in self._selected:
+            return SEL_BG
+        if is_current:
+            return CURRENT_BG
+        return COL_BG
+
+    def _row_frame(self, parent, text, is_current):
+        bg = self._base_bg(text, is_current)
+        row = tk.Frame(parent, bg=bg)
         row.pack(fill="x", pady=1)
+        accent = tk.Frame(row, bg=(CURRENT_BAR if is_current else bg), width=3)
+        accent.pack(side="left", fill="y")
 
         def hover(on):
-            bg = ROW_HOVER if on else (SEL_BG if text in self._selected else COL_BG)
-            row.config(bg=bg)
+            b = ROW_HOVER if on else self._base_bg(text, is_current)
+            row.config(bg=b)
             for c in row.winfo_children():
                 if isinstance(c, tk.Label):
-                    c.config(bg=bg)
+                    c.config(bg=b)
+            accent.config(bg=(CURRENT_BAR if is_current else b))
         row.bind("<Enter>", lambda e: hover(True))
         row.bind("<Leave>", lambda e: hover(False))
-        return row
+        return row, bg
 
-    def _meta_labels(self, row, entry, bg):
-        ago = timeago.format_ago(time.time() - entry["time"])
-        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="w",
-                 font=("Segoe UI", 8)).pack(side="left")
-        txt = tk.Label(row, text=_one_line(entry["text"]), bg=bg, fg=FG,
-                       anchor="w", font=("Consolas", 9), cursor="hand2")
-        txt.pack(side="left", fill="x", expand=True)
-        txt.bind("<Button-1>", lambda e, t=entry["text"]: self._copy_and_close(t))
-        tk.Label(row, text=str(len(entry["text"])), bg=bg, fg=DIM, width=4,
-                 anchor="e", font=("Segoe UI", 8)).pack(side="right")
-        return txt
-
-    def _icon_btn(self, row, glyph, color, bg, cmd):
+    def _icon_btn(self, row, glyph, color, bg, cmd, side="left"):
         b = tk.Label(row, text=glyph, bg=bg, fg=color, width=2,
                      font=("Segoe UI", 10), cursor="hand2")
-        b.pack(side="right")
+        b.pack(side=side)
         b.bind("<Button-1>", lambda e: cmd())
         return b
 
-    def _all_row(self, index, entry, now):
+    def _time_lbl(self, row, entry, bg):
+        ago = timeago.format_ago(time.time() - entry["time"])
+        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="w",
+                 font=("Segoe UI", 8)).pack(side="left")
+
+    def _len_lbl(self, row, entry, bg):
+        tk.Label(row, text=str(len(entry["text"])), bg=bg, fg=DIM, width=5,
+                 anchor="w", font=("Segoe UI", 8)).pack(side="left")
+
+    def _text_lbl(self, row, entry, bg):
+        txt = tk.Label(row, text=clip_view.flatten_line(entry["text"]), bg=bg,
+                       fg=FG, anchor="w", font=("Consolas", 9), cursor="hand2")
+        txt.pack(side="left")
+        txt.bind("<Button-1>", lambda e, t=entry["text"]: self._copy_and_close(t))
+        return txt
+
+    def _all_row(self, index, entry):
         text = entry["text"]
-        bg = SEL_BG if text in self._selected else COL_BG
-        row = self._row_frame(self.all_inner, text)
-        row.config(bg=bg)
+        is_current = (text == self._current)
+        row, bg = self._row_frame(self.all_inner, text, is_current)
         chk = tk.Label(row, text="☑" if text in self._selected else "☐", bg=bg,
                        fg=TEAL if text in self._selected else STAR_OFF,
                        font=("Segoe UI", 10), cursor="hand2")
@@ -265,14 +367,19 @@ class ClipPanel:
         star.pack(side="left")
         star.bind("<Button-1>", lambda e, t=text: self._favorite(t))
         self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
-        self._meta_labels(row, entry, bg)
+        self._time_lbl(row, entry, bg)
+        self._len_lbl(row, entry, bg)
+        self._text_lbl(row, entry, bg)
 
-    def _fav_row(self, entry, now):
+    def _fav_row(self, entry):
         text = entry["text"]
-        row = self._row_frame(self.fav_inner, text)
-        self._icon_btn(row, "✕", DIM, COL_BG, lambda t=text: self._delete(t))
-        self._icon_btn(row, "★", STAR_ON, COL_BG, lambda t=text: self._unfavorite(t))
-        self._meta_labels(row, entry, COL_BG)
+        is_current = (text == self._current)
+        row, bg = self._row_frame(self.fav_inner, text, is_current)
+        self._icon_btn(row, "★", STAR_ON, bg, lambda t=text: self._unfavorite(t))
+        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._time_lbl(row, entry, bg)
+        self._len_lbl(row, entry, bg)
+        self._text_lbl(row, entry, bg)
 
     def _render_remove(self):
         n = len(self._selected)
@@ -288,6 +395,13 @@ class ClipPanel:
                             fg=(TEAL if on else DIM))
 
     # -- actions ----------------------------------------------------------
+    def _current_clip(self):
+        try:
+            t = self.app.root.clipboard_get()
+        except tk.TclError:
+            return None
+        return t if t and t.strip() else None
+
     def _copy_and_close(self, text):
         try:
             self.app.root.clipboard_clear()
@@ -532,6 +646,22 @@ class ClipboardApp:
             pass
 
 
+def _smoke_exercise(app):
+    """Seed a long entry, point the live clipboard at it (highlight path), open
+    the panel and toggle its layout, so both layouts' build paths execute."""
+    long_text = "lorem ipsum dolor sit amet " * 8  # ~216 chars, one line
+    app.store.add(long_text, time.time())
+    try:
+        app.root.clipboard_clear()
+        app.root.clipboard_append(long_text)
+    except tk.TclError:
+        pass
+    app.open_panel()
+    panel = app.panel
+    if panel is not None:
+        app.root.after(300, panel._toggle_layout)
+
+
 def main():
     if not _smoke_ms() and not startup.acquire_single_instance("Toybox_clipboard"):
         return
@@ -540,11 +670,13 @@ def main():
 
     window.enable_dpi_awareness()
     root = tk.Tk()
-    ClipboardApp(root, store, cfg)
+    app = ClipboardApp(root, store, cfg)
     startup.watch_for_quit("Toybox_clipboard", root.after, root.destroy)
 
     ms = _smoke_ms()
     if ms:
+        if os.environ.get("TOYBOX_SMOKE_PANEL"):
+            _smoke_exercise(app)
         root.after(ms, root.destroy)
     root.mainloop()
 

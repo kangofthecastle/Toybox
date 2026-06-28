@@ -165,6 +165,20 @@ class TestConfig(unittest.TestCase):
             self.assertIsInstance(pet[key], bool)
         self.assertNotIn("pin_hotkey", pet)   # hotkey removed; pinning is cat-driven now
 
+    def test_clipboard_layout_default(self):
+        self.assertEqual(config.defaults()["clipboard"]["layout"], "columns")
+
+    def test_clipboard_layout_roundtrip(self):
+        cfg = config.defaults()
+        cfg["clipboard"]["layout"] = "stacked"
+        config.save(self.path, cfg)
+        self.assertEqual(config.load(self.path)["clipboard"]["layout"], "stacked")
+
+    def test_clipboard_layout_non_string_falls_back(self):
+        self._write({"clipboard": {"layout": 5}})
+        cfg = config.load(self.path)
+        self.assertEqual(cfg["clipboard"]["layout"], "columns")
+
 
 if __name__ == "__main__":
     unittest.main()
