@@ -112,6 +112,10 @@ class TestParseText(unittest.TestCase):
         items = parse.parse_text(body, "text/plain; charset=latin-1", None, 1)
         self.assertEqual(items[0].text, "café")
 
+    def test_regex_no_group_returns_whole_match(self):
+        items = parse.parse_text(b"version=1.2.3", None, r"\d+\.\d+\.\d+", 1)
+        self.assertEqual(items[0].text, "1.2.3")
+
 
 class TestParseCheckRuns(unittest.TestCase):
     def _body(self, runs):

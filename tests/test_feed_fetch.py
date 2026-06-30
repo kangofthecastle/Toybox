@@ -62,6 +62,7 @@ class TestFetch(unittest.TestCase):
         r = fetch.fetch(self._url("/etag"), etag='"v1"')
         self.assertEqual(r.status, "not_modified")
         self.assertIsNone(r.body)
+        self.assertEqual(r.etag, '"v1"')
 
     def test_size_cap(self):
         r = fetch.fetch(self._url("/big"), max_bytes=1000)
@@ -76,6 +77,7 @@ class TestFetch(unittest.TestCase):
     def test_http_403_with_quota_left_is_bad_token(self):
         r = fetch.fetch(self._url("/boom2"))
         self.assertEqual(r.error, "bad token")
+        self.assertEqual(r.status, "error")
 
     def test_connection_refused_is_offline(self):
         r = fetch.fetch("http://127.0.0.1:9/never", timeout=1)
@@ -106,6 +108,9 @@ class TestErrorWord(unittest.TestCase):
 
     def test_generic_urlerror_offline(self):
         self.assertEqual(fetch._error_word(urllib.error.URLError("down")), "offline")
+
+    def test_bare_timeout_is_offline(self):
+        self.assertEqual(fetch._error_word(TimeoutError()), "offline")
 
 
 if __name__ == "__main__":

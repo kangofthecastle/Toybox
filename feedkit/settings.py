@@ -3,6 +3,7 @@ ttk.Notebook with Feeds / GitHub tabs. Built on demand and reused as a singleton
 reads/writes the live cfg and calls back into the Hud. GUI glue only -- the
 testable logic lives in feedkit.model. Guards after()/refresh against TclError
 like petkit.settings."""
+import os
 import tkinter as tk
 from tkinter import ttk
 
@@ -154,31 +155,36 @@ class FeedSettingsWindow:
         self.hud.manager.set_token(self.hud._github_token())
         self.hud.manager.set_feeds(self.hud.cfg["feeds"])
         self.hud.feed_state = {}
-        self.hud._draw_feeds()
+        try:
+            self.hud._draw_feeds()
+        except tk.TclError:
+            pass
 
     def _refresh_list(self):
         if self.win is None:
             return
-        for w in self._list.winfo_children():
-            w.destroy()
-        feeds = self.hud.cfg.get("feeds", [])
-        if not feeds:
-            tk.Label(self._list, text="(no feeds)", fg="#888").pack(anchor="w")
+        try:
+            for w in self._list.winfo_children():
+                w.destroy()
+            feeds = self.hud.cfg.get("feeds", [])
+            if not feeds:
+                tk.Label(self._list, text="(no feeds)", fg="#888").pack(anchor="w")
+                return
+            for i, feed in enumerate(feeds):
+                norm = model.normalize_feed(feed)
+                row = tk.Frame(self._list); row.pack(fill="x", pady=1)
+                tk.Button(row, text="✕", width=2,
+                          command=lambda idx=i: self._remove(idx)).pack(side="right")
+                label = "%s  [%s]%s" % (norm.get("title", "feed"), feed.get("type", "?"),
+                                        "" if norm.get("valid") else "  !")
+                tk.Label(row, text=label, anchor="w").pack(side="left")
+        except tk.TclError:
             return
-        for i, feed in enumerate(feeds):
-            norm = model.normalize_feed(feed)
-            row = tk.Frame(self._list); row.pack(fill="x", pady=1)
-            tk.Button(row, text="✕", width=2,
-                      command=lambda idx=i: self._remove(idx)).pack(side="right")
-            label = "%s  [%s]%s" % (norm.get("title", "feed"), feed.get("type", "?"),
-                                    "" if norm.get("valid") else "  !")
-            tk.Label(row, text=label, anchor="w").pack(side="left")
 
     # --- GitHub tab -----------------------------------------------------
     def _build_github_tab(self):
         f = tk.Frame(self._nb)
         self._nb.add(f, text="GitHub")
-        import os
         env_set = bool(os.environ.get("TOYBOX_GITHUB_TOKEN"))
         src = "environment (TOYBOX_GITHUB_TOKEN)" if env_set else "this field / config.json"
         tk.Label(f, text="Active token source: " + src, fg="#555").pack(anchor="w", padx=10, pady=(10, 2))

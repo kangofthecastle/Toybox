@@ -133,6 +133,15 @@ class TestHudClickAndMenu(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_open_at_rechecks_scheme_on_planted_hit(self):
+        root, hud = self._make_hud([{"type": "rss", "url": "https://x", "title": "X"}])
+        try:
+            hud._hit = [(80, 95, "file:///etc/passwd")]   # planted, bypassing _register_hit
+            self.assertIsNone(hud._open_at(10, 88))        # _open_at re-checks is_web_url
+            hud.close()
+        finally:
+            root.destroy()
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestFeedSettings(_HudTestBase):
