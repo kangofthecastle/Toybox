@@ -113,5 +113,77 @@ class TestParseText(unittest.TestCase):
         self.assertEqual(items[0].text, "café")
 
 
+class TestParseCheckRuns(unittest.TestCase):
+    def _body(self, runs):
+        import json as _j
+        return _j.dumps({"total_count": len(runs), "check_runs": runs}).encode()
+
+    def test_empty_is_none(self):
+        self.assertEqual(parse.parse_check_runs(self._body([])), "none")
+
+    def test_all_success(self):
+        runs = [{"status": "completed", "conclusion": "success"},
+                {"status": "completed", "conclusion": "skipped"}]
+        self.assertEqual(parse.parse_check_runs(self._body(runs)), "success")
+
+    def test_in_progress_is_pending(self):
+        runs = [{"status": "completed", "conclusion": "success"},
+                {"status": "in_progress", "conclusion": None}]
+        self.assertEqual(parse.parse_check_runs(self._body(runs)), "pending")
+
+    def test_incomplete_dominates_even_with_a_failure(self):
+        # Spec rule: any not-completed run -> pending, regardless of an already
+        # failed sibling (a re-run in progress shows amber, not red).
+        runs = [{"status": "in_progress", "conclusion": None},
+                {"status": "completed", "conclusion": "failure"}]
+        self.assertEqual(parse.parse_check_runs(self._body(runs)), "pending")
+
+    def test_all_completed_with_a_failure_is_failure(self):
+        runs = [{"status": "completed", "conclusion": "success"},
+                {"status": "completed", "conclusion": "failure"}]
+        self.assertEqual(parse.parse_check_runs(self._body(runs)), "failure")
+
+    def test_timed_out_is_failure(self):
+        runs = [{"status": "completed", "conclusion": "timed_out"}]
+        self.assertEqual(parse.parse_check_runs(self._body(runs)), "failure")
+
+
+class TestParseNotifications(unittest.TestCase):
+    def test_counts_array_length(self):
+        body = b'[{"id":"1","unread":true},{"id":"2","unread":true}]'
+        self.assertEqual(parse.parse_notifications(body), 2)
+
+    def test_filters_read(self):
+        body = b'[{"id":"1","unread":true},{"id":"2","unread":false}]'
+        self.assertEqual(parse.parse_notifications(body), 1)
+
+    def test_non_list_is_zero(self):
+        self.assertEqual(parse.parse_notifications(b'{"message":"Bad creds"}'), 0)
+
+
+class TestComposeGithubStatus(unittest.TestCase):
+    def test_ci_and_notifications(self):
+        s = parse.compose_github_status("kangofthecastle/Toybox", "main", "success", 3)
+        self.assertEqual(s.state, "success")
+        self.assertIn("Toybox", s.text)
+        self.assertIn("passing", s.text)
+        self.assertIn("3", s.text)
+        self.assertEqual(s.url, "https://github.com/kangofthecastle/Toybox/actions")
+
+    def test_no_notifications_omits_bell(self):
+        s = parse.compose_github_status("o/r", "main", "failure", None)
+        self.assertIn("failing", s.text)
+        self.assertNotIn("\U0001f514", s.text)
+
+    def test_fifty_plus(self):
+        s = parse.compose_github_status("o/r", "main", "none", 50)
+        self.assertIn("50+", s.text)
+
+    def test_notifications_only_points_at_notifications(self):
+        s = parse.compose_github_status("o/r", "main", "none", 4, ci_shown=False)
+        self.assertEqual(s.url, "https://github.com/notifications")
+        self.assertNotIn("●", s.text)        # no CI glyph when CI isn't shown
+
+
 if __name__ == "__main__":
     unittest.main()

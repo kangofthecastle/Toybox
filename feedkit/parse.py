@@ -126,3 +126,48 @@ def parse_text(body, content_type, regex, items, url=None):
         return [Item(_clean(value), url)]
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return [Item(_clean(ln), url) for ln in lines[:items]]
+
+
+_GOOD_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+_CI_WORD = {"success": "passing", "failure": "failing", "pending": "pending", "none": "—"}
+
+
+def parse_check_runs(body):
+    """Reduce a check-runs response to one of none/pending/success/failure, per
+    the spec's order: empty -> none; ANY run not completed -> pending (a re-run
+    in progress shows amber even if a sibling already failed); all completed ->
+    success iff every conclusion is success/neutral/skipped, else failure."""
+    data = json.loads(body)
+    runs = data.get("check_runs") if isinstance(data, dict) else None
+    if not runs:
+        return "none"
+    if any(run.get("status") != "completed" for run in runs):
+        return "pending"
+    if all(run.get("conclusion") in _GOOD_CONCLUSIONS for run in runs):
+        return "success"
+    return "failure"
+
+
+def parse_notifications(body):
+    """Count unread notification threads (the endpoint returns unread-only by
+    default; we still filter unread != false defensively)."""
+    data = json.loads(body)
+    if not isinstance(data, list):
+        return 0
+    return sum(1 for n in data if isinstance(n, dict) and n.get("unread", True))
+
+
+def compose_github_status(repo, branch, ci_state, notif_count, ci_shown=True):
+    """Build the github tile's header Status. When CI is shown the text leads with
+    the colored ● + CI word and the click target is the repo's Actions page; a
+    notifications-only tile shows just the name and points at /notifications."""
+    name = repo.split("/")[-1]
+    if ci_shown:
+        text = "%s ● %s" % (name, _CI_WORD.get(ci_state, "—"))
+        url = "https://github.com/%s/actions" % repo
+    else:
+        text = name
+        url = "https://github.com/notifications"
+    if notif_count is not None:
+        text += "  \U0001f514 %s" % ("50+" if notif_count >= 50 else notif_count)
+    return Status(_clean(text, 40), ci_state, url)
