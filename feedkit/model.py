@@ -2,6 +2,7 @@
 and GitHub URL/header builders. No network, no Tk, no clock -- the worker injects
 ``now`` and raw bytes. Everything here is deterministic and unit-testable."""
 from collections import namedtuple
+import math
 import re
 import urllib.parse
 
@@ -84,6 +85,9 @@ _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 def _coerce_int(value, default, lo, hi):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    # Guard against non-finite floats (NaN, Inf) which int() cannot convert
+    if isinstance(value, float) and not math.isfinite(value):
         return default
     return max(lo, min(hi, int(value)))
 

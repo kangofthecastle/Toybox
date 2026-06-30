@@ -137,6 +137,22 @@ class TestNormalizeFeed(unittest.TestCase):
     def test_non_dict_input(self):
         self.assertFalse(model.normalize_feed("nope")["valid"])
 
+    def test_non_finite_numbers_fall_back_not_raise(self):
+        f = model.normalize_feed({"type": "rss", "url": "https://x/y", "interval": float("nan")})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["interval"], 300)        # non-finite -> default floor, no raise
+        g = model.normalize_feed({"type": "rss", "url": "https://x/y", "items": float("inf")})
+        self.assertEqual(g["items"], 3)             # non-finite -> default, no raise
+
+    def test_github_show_all_invalid_is_invalid(self):
+        f = model.normalize_feed({"type": "github", "repo": "o/r", "show": ["bogus", "junk"]})
+        self.assertFalse(f["valid"])
+        self.assertIn("show", f["error"])
+
+    def test_items_lower_clamp(self):
+        f = model.normalize_feed({"type": "rss", "url": "https://x/y", "items": 0})
+        self.assertEqual(f["items"], 1)             # clamped up to the 1..10 floor
+
 
 class TestDueFeeds(unittest.TestCase):
     def _valid(self, interval):
