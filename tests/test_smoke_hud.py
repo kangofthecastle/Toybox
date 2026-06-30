@@ -319,5 +319,53 @@ class TestHudNotificationsRendering(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNotificationsDismiss(_HudTestBase):
+    def _ditem(self, thread_url="https://api.github.com/notifications/threads/7",
+               url="https://github.com/o/app/issues/7", repo="o/app", title="T"):
+        from feedkit.model import NotifItem
+        return NotifItem("◉", repo, "#7", "@you", "high", 0.0, title, url, thread_url)
+
+    def test_dismiss_glyph_and_zone_registered(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._ditem()], None, None, 1)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("✕"))   # ✕ per-item
+            self.assertTrue(hud._feed_has_text("✓"))   # ✓ header mark-all
+            ones = [a for (_, _, _, _, a) in hud._action_hits if a[0] == "one"]
+            alls = [a for (_, _, _, _, a) in hud._action_hits if a[0] == "all"]
+            self.assertEqual(ones[0],
+                             ("one", 0, "https://api.github.com/notifications/threads/7"))
+            self.assertEqual(alls[0], ("all", 0))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_item_without_thread_url_has_no_dismiss(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._ditem(thread_url="")],
+                                                   None, None, 1)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertFalse(any(a[0] == "one" for (_, _, _, _, a) in hud._action_hits))
+            self.assertFalse(hud._feed_has_text("✕"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_dismiss_zone_x_is_right_edge(self):
+        import hud as hudmod
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._ditem()], None, None, 1)
+            hud._draw_feeds(); root.update_idletasks()
+            one = [(x0, x1) for (_, _, x0, x1, a) in hud._action_hits if a[0] == "one"][0]
+            self.assertEqual(one, (hudmod.WIDTH - hudmod.PAD - hudmod.ACTION_ZONE_W, hudmod.WIDTH))
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
