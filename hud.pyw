@@ -330,6 +330,29 @@ class Hud:
                 header_action = ("all", idx) if (result.state == "ok" and result.items) else None
                 yield (header, "https://github.com/notifications", FEED_FG, lines, header_action)
                 continue
+            if feed["type"] == "search":
+                badge = result.badge or 0           # badge may be None
+                header = title + ("  (%d)" % badge)
+                web = feedmodel.github_search_web_url(feed["query"])
+                lines = []
+                if result.error == "no github_token":
+                    lines.append(("! set GitHub token in Settings", None, True))
+                elif result.error and not result.items:
+                    lines.append(("! " + result.error, None, True))
+                elif result.state == "ok" and not result.items:
+                    lines.append(("none open", None, True))
+                stale = result.state != "ok"
+                for it in result.items:
+                    color = FEED_DIM if stale else URGENCY_HEX.get(it.urgency, FEED_FG)
+                    age = "" if it.updated_at <= 0 else timeago.format_ago(time.time() - it.updated_at)
+                    num = (" " + it.number) if it.number else ""
+                    line1 = "%s %s%s · %s" % (it.glyph, _repo_short(it.repo), num, it.reason_label)
+                    lines.append((line1, it.url, color, it.title, age, None))
+                extra = badge - len(result.items)
+                if extra > 0:
+                    lines.append(("… %d more" % extra, web, True))
+                yield (header, web, FEED_FG, lines, None)
+                continue
             if result.status is not None:                 # github tile
                 color = STATE_HEX.get(result.status.state, FEED_DIM)
                 lines = [("! " + result.error, None, True)] if result.error else []

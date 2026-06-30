@@ -475,5 +475,76 @@ class TestHudScopedSave(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudSearchRendering(_HudTestBase):
+    FEED = {"type": "search", "title": "My PRs",
+            "query": "is:open is:pr author:@me", "items": 5}
+
+    def _item(self, repo="o/app", num="#34", title="Fix the thing",
+              url="https://github.com/o/app/pull/34", urgency="normal",
+              glyph="⇄", label="@me", ts=0.0):
+        from feedkit.model import NotifItem
+        return NotifItem(glyph, repo, num, label, urgency, ts, title, url)
+
+    def test_renders_rows_and_count(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._item()], None, None, 3)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("(3)"))          # header count
+            self.assertTrue(hud._feed_has_text("app"))          # line 1 repo
+            self.assertTrue(hud._feed_has_text("Fix the thing"))  # line 2 title
+        finally:
+            hud.close(); root.destroy()
+
+    def test_item_clickable_and_no_dismiss(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._item()], None, None, 1)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(any(u == "https://github.com/o/app/pull/34"
+                                for (_, _, u) in hud._hit))
+            self.assertEqual(hud._action_hits, [])              # search rows have no ✕
+        finally:
+            hud.close(); root.destroy()
+
+    def test_header_and_overflow_link_to_web_search(self):
+        import feedkit.manager as manager
+        import feedkit.model as model
+        root, hud = self._make_hud([self.FEED])
+        try:
+            items = [self._item(num="#%d" % i, url="https://github.com/o/app/pull/%d" % i)
+                     for i in range(5)]
+            hud.feed_state[0] = manager.FeedResult("ok", items, None, None, 12)
+            hud._draw_feeds(); root.update_idletasks()
+            web = model.github_search_web_url("is:open is:pr author:@me")
+            self.assertTrue(hud._feed_has_text("7 more"))       # 12 total - 5 shown
+            self.assertTrue(any(u == web for (_, _, u) in hud._hit))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_no_token_line(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.feed_state[0] = manager.FeedResult("error", [], None, "no github_token", None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("set GitHub token"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_none_open(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [], None, None, 0)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("none open"))
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
