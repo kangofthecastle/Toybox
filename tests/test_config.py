@@ -179,6 +179,27 @@ class TestConfig(unittest.TestCase):
         cfg = config.load(self.path)
         self.assertEqual(cfg["clipboard"]["layout"], "columns")
 
+    def test_feeds_default_is_empty_list(self):
+        self.assertEqual(config.defaults()["feeds"], [])
+
+    def test_github_token_default_is_empty_string(self):
+        self.assertEqual(config.defaults()["hud"]["github_token"], "")
+
+    def test_feeds_list_roundtrip(self):
+        cfg = config.defaults()
+        cfg["feeds"] = [{"type": "rss", "url": "https://x/y", "title": "X"}]
+        config.save(self.path, cfg)
+        self.assertEqual(config.load(self.path)["feeds"],
+                         [{"type": "rss", "url": "https://x/y", "title": "X"}])
+
+    def test_feeds_non_list_falls_back_to_empty(self):
+        self._write({"feeds": "nope"})
+        self.assertEqual(config.load(self.path)["feeds"], [])
+
+    def test_github_token_non_string_falls_back(self):
+        self._write({"hud": {"github_token": 123}})
+        self.assertEqual(config.load(self.path)["hud"]["github_token"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
