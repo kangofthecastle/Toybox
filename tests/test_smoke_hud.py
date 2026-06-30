@@ -591,6 +591,18 @@ class TestHudSearchRendering(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_stale_items_render_dim(self):
+        import feedkit.manager as manager
+        import hud as hudmod
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.feed_state[0] = manager.FeedResult(
+                "stale", [self._item(repo="o/app")], None, "offline", 3)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "app"), hudmod.FEED_DIM)
+        finally:
+            hud.close(); root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -263,6 +263,7 @@ class TestProcessSearch(unittest.TestCase):
         self.assertEqual(result.state, "stale")
         self.assertEqual(result.error, "bad data")
         self.assertEqual(result.badge, 2)
+        self.assertEqual(len(result.items), 2)
 
 
 def _send_ok():
