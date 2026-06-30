@@ -3,10 +3,12 @@ check-runs/notifications. No network, no Tk. Output text is sanitized and
 truncated so hostile remote content can't corrupt the canvas or blow out the
 layout. parse_rss refuses DOCTYPE/ENTITY payloads (xml.etree is vulnerable to
 entity-expansion and there is no stdlib defusedxml)."""
+import datetime
 import json
 import re
 import xml.etree.ElementTree as ET
 
+import feedkit.model as model
 from feedkit.model import Item, Status, strip_control_chars, truncate
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
@@ -155,6 +157,46 @@ def parse_notifications(body):
     if not isinstance(data, list):
         return 0
     return sum(1 for n in data if isinstance(n, dict) and n.get("unread", True))
+
+
+def _parse_ts(s):
+    """ISO-8601 timestamp (e.g. '2026-06-29T00:00:00Z') -> float unix seconds.
+    Returns 0.0 for None/missing/unparseable values (the HUD renders no age)."""
+    try:
+        return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def parse_notification_items(body, max_items):
+    """Parse a /notifications response into (list[NotifItem], total_unread).
+    total counts every unread thread on the page (drives the badge); the list is
+    capped at max_items. Defensive against null subject.url and missing keys."""
+    data = json.loads(body)
+    if not isinstance(data, list):
+        return [], 0
+    unread = [n for n in data if isinstance(n, dict) and n.get("unread", True)]
+    total = len(unread)
+    out = []
+    for n in unread[:max_items]:
+        subj = n.get("subject") or {}
+        stype = subj.get("type") or ""
+        repo = (n.get("repository") or {}).get("full_name") or ""
+        suburl = subj.get("url") or ""              # JSON null -> "" (NOT .get(k,"") -> None)
+        seg = suburl.rsplit("/", 1)[-1] if suburl else ""
+        number = "#" + seg if seg.isdigit() else ""
+        reason = n.get("reason") or ""
+        out.append(model.NotifItem(
+            glyph=model.glyph_for(stype),
+            repo=repo,
+            number=number,
+            reason_label=model.reason_label(reason),
+            urgency=model.urgency_for(reason),
+            updated_at=_parse_ts(n.get("updated_at")),
+            title=_clean(subj.get("title") or ""),
+            url=model.notification_url(stype, subj.get("url"), repo),
+        ))
+    return out, total
 
 
 def compose_github_status(repo, branch, ci_state, notif_count, ci_shown=True):
