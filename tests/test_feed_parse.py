@@ -288,5 +288,76 @@ class TestParseNotificationItems(unittest.TestCase):
         self.assertEqual(items[0].thread_url, "")
 
 
+def _sr(**over):
+    """One /search/issues result item (a PR by default)."""
+    it = {"number": 34, "title": "Fix the thing",
+          "html_url": "https://github.com/o/app/pull/34",
+          "repository_url": "https://api.github.com/repos/o/app",
+          "user": {"login": "octocat"},
+          "updated_at": "2026-06-29T00:00:00Z",
+          "pull_request": {"url": "https://api.github.com/repos/o/app/pulls/34"}}
+    it.update(over)
+    return it
+
+
+def _sbody(items, total=None):
+    payload = {"items": items}
+    if total is not None:
+        payload["total_count"] = total
+    return json.dumps(payload).encode()
+
+
+class TestParseSearchItems(unittest.TestCase):
+    def test_non_dict_body_is_empty(self):
+        self.assertEqual(parse.parse_search_items(b"[]", 5), ([], 0))
+
+    def test_missing_items_is_empty(self):
+        self.assertEqual(parse.parse_search_items(b'{"total_count":3}', 5), ([], 0))
+
+    def test_basic_pr(self):
+        items, total = parse.parse_search_items(_sbody([_sr()], total=3), 5)
+        self.assertEqual(total, 3)
+        it = items[0]
+        self.assertEqual(it.glyph, model.glyph_for("PullRequest"))
+        self.assertEqual(it.repo, "o/app")
+        self.assertEqual(it.number, "#34")
+        self.assertEqual(it.reason_label, "@octocat")
+        self.assertEqual(it.urgency, "normal")
+        self.assertEqual(it.title, "Fix the thing")
+        self.assertEqual(it.url, "https://github.com/o/app/pull/34")
+        self.assertEqual(it.thread_url, "")
+        self.assertGreater(it.updated_at, 0)
+
+    def test_issue_uses_issue_glyph(self):
+        issue = _sr()
+        del issue["pull_request"]
+        items, _ = parse.parse_search_items(_sbody([issue]), 5)
+        self.assertEqual(items[0].glyph, model.glyph_for("Issue"))
+
+    def test_draft_pr_is_low_urgency(self):
+        items, _ = parse.parse_search_items(_sbody([_sr(draft=True)]), 5)
+        self.assertEqual(items[0].urgency, "low")
+
+    def test_missing_user_number_html(self):
+        bare = {"title": "no metadata", "repository_url": "https://api.github.com/repos/o/app"}
+        items, total = parse.parse_search_items(_sbody([bare]), 5)
+        self.assertEqual(total, 1)                       # total_count absent -> len(items)
+        it = items[0]
+        self.assertEqual(it.reason_label, "")
+        self.assertEqual(it.number, "")
+        self.assertEqual(it.url, "")                     # no html_url -> no click target
+        self.assertEqual(it.repo, "o/app")
+
+    def test_total_count_absent_falls_back_to_len(self):
+        items, total = parse.parse_search_items(_sbody([_sr(), _sr(number=35)]), 5)
+        self.assertEqual(total, 2)
+
+    def test_max_items_caps_list(self):
+        items, total = parse.parse_search_items(
+            _sbody([_sr(number=i) for i in range(8)], total=8), 3)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(total, 8)
+
+
 if __name__ == "__main__":
     unittest.main()

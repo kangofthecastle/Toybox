@@ -200,6 +200,50 @@ def parse_notification_items(body, max_items):
     return out, total
 
 
+_SEARCH_REPO_PREFIX = "https://api.github.com/repos/"
+
+
+def parse_search_items(body, max_items):
+    """Parse a /search/issues response into (list[NotifItem], total_count).
+    total_count drives the count shown in the tile title; the list is capped at
+    max_items. Defensive against missing keys and non-list items. A result with
+    a 'pull_request' object is a PR (⇄); otherwise an issue (◉)."""
+    data = json.loads(body)
+    items_raw = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items_raw, list):
+        return [], 0
+    total = data.get("total_count")
+    if not isinstance(total, int) or isinstance(total, bool):
+        total = len(items_raw)
+    out = []
+    for it in items_raw[:max_items]:
+        if not isinstance(it, dict):
+            continue
+        is_pr = isinstance(it.get("pull_request"), dict)
+        repo_url = it.get("repository_url") or ""
+        repo = (repo_url[len(_SEARCH_REPO_PREFIX):]
+                if isinstance(repo_url, str) and repo_url.startswith(_SEARCH_REPO_PREFIX)
+                else "")
+        num = it.get("number")
+        number = "#%d" % num if isinstance(num, int) and not isinstance(num, bool) else ""
+        user = it.get("user")
+        login = user.get("login") if isinstance(user, dict) else None
+        label = ("@" + login) if login else ""
+        urgency = "low" if (is_pr and it.get("draft")) else "normal"
+        html = it.get("html_url")
+        out.append(model.NotifItem(
+            glyph=model.glyph_for("PullRequest" if is_pr else "Issue"),
+            repo=repo,
+            number=number,
+            reason_label=label,
+            urgency=urgency,
+            updated_at=_parse_ts(it.get("updated_at")),
+            title=_clean(it.get("title") or ""),
+            url=html if model.is_web_url(html) else "",
+        ))
+    return out, total
+
+
 def compose_github_status(repo, branch, ci_state, notif_count, ci_shown=True):
     """Build the github tile's header Status. When CI is shown the text leads with
     the colored ● + CI word and the click target is the repo's Actions page; a
