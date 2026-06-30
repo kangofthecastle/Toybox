@@ -6,7 +6,7 @@ import os
 import tempfile
 
 DEFAULTS = {
-    "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False},
+    "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False, "github_token": ""},
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True, "layout": "columns"},
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
@@ -17,6 +17,7 @@ DEFAULTS = {
             "nudges": True, "nudge_min": 50,
             "pin": True, "carry": True},
     "startup": {"hud": False, "clipboard": False, "pet": False},
+    "feeds": [],
 }
 
 
