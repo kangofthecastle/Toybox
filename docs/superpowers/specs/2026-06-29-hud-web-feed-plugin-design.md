@@ -76,15 +76,16 @@ feedkit/
   __init__.py
   model.py      # PURE  — Item/Status types; normalize_feed(); due_feeds();
   #                       build_conditional_headers(); strip_control_chars();
-  #                       truncate(); GitHub URL/header builders.
+  #                       truncate(); is_web_url(); GitHub URL/header builders.
   parse.py      # PURE  — parse_rss / parse_json / parse_text;
   #                       parse_check_runs (reduce) / parse_notifications (count);
   #                       compose_github_status(). No network, no Tk.
   fetch.py      # NET   — fetch(): urllib + ssl GET with conditional headers,
   #                       timeout, size cap, 304/error taxonomy. Thin.
   manager.py    # GLUE  — FeedManager: one daemon worker thread + queue;
-  #                       process_feed()/process_github() (pure-ish, testable);
-  #                       start()/stop()/drain()/set_feeds().
+  #                       _run_once() orchestration -> _fetch_and_process()/
+  #                       _process_github() (injected fetch_fn, unit-testable);
+  #                       start()/stop()/drain()/set_feeds()/set_token().
   settings.py   # GUI   — FeedSettingsWindow (ttk.Notebook), like petkit/settings.py.
 hud.pyw         # renders feed blocks under the metrics; click-to-open; menu;
                 # owns FeedManager + the settings window.
@@ -107,7 +108,7 @@ cat's), Win32 untouched in `winkit/`.
    daemon worker), and schedules `after(250, self._drain_feeds)`.
 2. **Worker thread** (never touches Tk): loop every ~1 s — `due =
    model.due_feeds(feeds, last_fetch, now())`; for each due feed build the
-   request(s), call `fetch.fetch(...)`, run `process_feed`/`process_github`,
+   request(s), call `fetch.fetch(...)`, run `_fetch_and_process`/`_process_github`,
    `queue.put((idx, FeedResult))`, update `last_fetch[idx]` and the ETag/
    Last-Modified cache. Each feed wrapped in `try/except` — one failure can't
    stop the others or the loop. Obeys a stop `Event`.
@@ -182,7 +183,8 @@ very first pass (`last_fetch` empty) it staggers initial fetches by
 - GitHub URL/header builders (pure strings):
   - `github_ci_url(repo, branch) -> str` →
     `https://api.github.com/repos/{repo}/commits/{quote(branch)}/check-runs?per_page=100`.
-  - `github_notifications_url() -> str` → `https://api.github.com/notifications`.
+  - `github_notifications_url() -> str` → `https://api.github.com/notifications?per_page=50` (so the unread count can reach the "50+" threshold).
+  - `is_web_url(url) -> bool` → True only for `http`/`https` (the single gate on what may be opened in a browser).
   - `github_headers(token) -> dict` →
     `{"User-Agent":"Toybox-WebFeed/1.0", "Accept":"application/vnd.github+json",
     "X-GitHub-Api-Version":"2022-11-28"}` plus `"Authorization": "Bearer "+token`
@@ -247,12 +249,13 @@ URL is the source `url` (passed by the worker) or None.
 - `parse_notifications(body: bytes) -> int` → `len(json.loads(body))` (the
   endpoint returns unread-only by default), defensively filtering
   `unread == true`.
-- `compose_github_status(repo, branch, ci_state, notif_count) -> Status`:
+- `compose_github_status(repo, branch, ci_state, notif_count, ci_shown=True) -> Status`:
   - `state` = `ci_state` (`success`/`failure`/`pending`/`none`).
-  - `text` = `"<repo-name> ● <ci-word>"` (passing/failing/pending/—) plus
-    `"  🔔 N"` (or `"50+"`) when `notif_count` is not None.
-  - `url` = `https://github.com/{repo}/actions` (notifications-only tiles point
-    at `https://github.com/notifications`).
+  - `text` = `"<repo-name> ● <ci-word>"` (passing/failing/pending/—) when `ci_shown`,
+    else just `"<repo-name>"`; plus `"  🔔 N"` (or `"50+"`) when `notif_count` is not None.
+  - `url` = `https://github.com/{repo}/actions` when `ci_shown`, else
+    `https://github.com/notifications` (notifications-only tile). The HUD makes this
+    URL the click target of the github tile's header line (http/https only).
 
 **Worker orchestration for a `github` feed.** CI (`check-runs`) is fetched when
 `"ci"` is in `show` (anonymous is fine for a public repo). The notifications
@@ -317,8 +320,10 @@ Verified behavior (Python 3.12.10 / OpenSSL 3.0.16 on Windows 10):
 - **Rate limits / cadence:** unauthenticated 60/hr per IP; authenticated
   5,000/hr. Default `github` interval 120 s (= 30 req/hr per tile). Use ETag
   conditional requests: an **authenticated** 304 is free against the limit;
-  **anonymous** 304s still count (see Open Risks). Honor the `X-Poll-Interval`
-  response header from `/notifications` (≈60 s minimum); never poll faster.
+  **anonymous** 304s still count (see Open Risks). The 120 s `github` interval
+  floor already exceeds GitHub's `X-Poll-Interval` minimum (≈60 s), so the header
+  is **not** dynamically honored in v1 (non-goal); a server-raised value above
+  120 s is the only unhandled case.
 
 ### Token storage (decision)
 
@@ -399,12 +404,18 @@ a singleton, reads/writes the live cfg, calls back into the HUD for actions):
   `parse_check_runs` reduction table (empty→none, in_progress→pending,
   all-success→success, neutral/skipped→success, failure/timed_out→failure);
   `parse_notifications` count; `compose_github_status` text/state/url.
-- **`test_feed_manager.py`**: `process_feed`/`process_github` driven by injected
+- **`test_feed_manager.py`**: `_run_once` (calling `_fetch_and_process`/
+  `_process_github`) driven by an injected `fetch_fn` returning canned
   `FetchResult`s (ok / not_modified / error) — no real thread or network;
-  verifies a 304 keeps prior items, an error yields a stale/error result, and
-  `ok` dispatches to the right parser. `set_feeds` swap under the lock.
-- **`test_smoke_hud.py`** (existing): still launches clean and exits with
-  `feeds: []` (offline-safe; no network at smoke time).
+  verifies a 304 keeps prior items, an error after success yields `stale`, a 200
+  with unparseable bytes also yields `stale` (`bad data`), no-token skips
+  notifications, and `ok` dispatches to the right parser. `set_feeds` swap clears
+  the cache under the lock.
+- **`test_smoke_hud.py`** (existing + new Tk-construction tests): the existing
+  smoke test still launches clean and exits with `feeds: []`; `hud.pyw` skips
+  `manager.start()` under `_smoke_ms()` so the smoke run does no network
+  regardless of the local `config.json`. The new in-process Tk tests stub
+  `feedkit.fetch.fetch` (offline) and isolate `CFG_PATH` to a temp dir.
 - `fetch.py` is the only network-only / integration surface and is kept thin;
   it is not unit-tested against the live network.
 
