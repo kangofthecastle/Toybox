@@ -423,6 +423,20 @@ class TestHudNotificationsDismiss(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_failed_dismiss_shows_dismiss_failed_line(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            # the manager restores a "stale"/"dismiss failed" result that re-attaches
+            # the full cached items (badge restored) when a mark-as-read call fails
+            hud.feed_state[0] = manager.FeedResult(
+                "stale", [self._ditem()], None, "dismiss failed", 1)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("! dismiss failed"))  # banner shown despite items present
+            self.assertTrue(hud._feed_has_text("app"))               # restored item still rendered (repo short of o/app)
+        finally:
+            hud.close(); root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -304,6 +304,8 @@ class Hud:
                 lines = []
                 if result.error == "no github_token":
                     lines.append(("! set GitHub token in Settings", None, True))
+                elif result.error == "dismiss failed":
+                    lines.append(("! dismiss failed", None, True))
                 elif result.error and not result.items:
                     lines.append(("! " + result.error, None, True))
                 elif result.state == "ok" and not result.items:
