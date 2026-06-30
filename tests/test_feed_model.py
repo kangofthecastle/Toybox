@@ -60,6 +60,102 @@ class TestGithubBuilders(unittest.TestCase):
         self.assertEqual(h["Authorization"], "Bearer ghp_secret")
 
 
+class TestNotifClassifiers(unittest.TestCase):
+    def test_glyph_known_and_unknown(self):
+        self.assertEqual(model.glyph_for("PullRequest"), "⇄")   # ⇄
+        self.assertEqual(model.glyph_for("Issue"), "◉")         # ◉
+        self.assertEqual(model.glyph_for("Discussion"), "\U0001f4ac")  # 💬
+        self.assertEqual(model.glyph_for("Release"), "\U0001f3f7")     # 🏷
+        self.assertEqual(model.glyph_for("CheckSuite"), "⚑")      # ⚑
+        self.assertEqual(model.glyph_for("WorkflowRun"), "⚑")
+        self.assertEqual(model.glyph_for("Commit"), "◉")
+        self.assertEqual(model.glyph_for("Nonsense"), "◉")        # default ◉
+
+    def test_reason_label_known_and_unknown(self):
+        self.assertEqual(model.reason_label("review_requested"), "review")
+        self.assertEqual(model.reason_label("mention"), "@you")
+        self.assertEqual(model.reason_label("ci_activity"), "CI")
+        self.assertEqual(model.reason_label("weird_reason_x"), "weird re")  # _->space, [:8]
+        self.assertEqual(model.reason_label(""), "")
+
+    def test_urgency_tiers(self):
+        self.assertEqual(model.urgency_for("review_requested"), "high")
+        self.assertEqual(model.urgency_for("mention"), "high")
+        self.assertEqual(model.urgency_for("comment"), "normal")
+        self.assertEqual(model.urgency_for("push"), "normal")
+        self.assertEqual(model.urgency_for("subscribed"), "low")
+        self.assertEqual(model.urgency_for("your_activity"), "low")
+        self.assertEqual(model.urgency_for("totally_unknown"), "low")
+
+    def test_url_pull_request(self):
+        self.assertEqual(
+            model.notification_url("PullRequest", "https://api.github.com/repos/o/r/pulls/34", "o/r"),
+            "https://github.com/o/r/pull/34")
+
+    def test_url_issue_identity(self):
+        self.assertEqual(
+            model.notification_url("Issue", "https://api.github.com/repos/o/r/issues/5", "o/r"),
+            "https://github.com/o/r/issues/5")
+
+    def test_url_commit(self):
+        self.assertEqual(
+            model.notification_url("Commit", "https://api.github.com/repos/o/r/commits/abc123", "o/r"),
+            "https://github.com/o/r/commit/abc123")
+
+    def test_url_security_advisory(self):
+        self.assertEqual(
+            model.notification_url("SecurityAdvisory",
+                "https://api.github.com/repos/o/r/security-advisories/GHSA-x", "o/r"),
+            "https://github.com/o/r/security/advisories/GHSA-x")
+
+    def test_url_check_suite_to_actions(self):
+        self.assertEqual(
+            model.notification_url("CheckSuite",
+                "https://api.github.com/repos/o/r/check-suites/9", "o/r"),
+            "https://github.com/o/r/actions")
+
+    def test_url_null_falls_back_to_subpage(self):
+        self.assertEqual(model.notification_url("Issue", None, "o/r"),
+                         "https://github.com/o/r/issues")
+
+    def test_url_non_repos_url_falls_back(self):
+        self.assertEqual(
+            model.notification_url("Discussion",
+                "https://api.github.com/organizations/1/team/2/discussions/3", "o/r"),
+            "https://github.com/o/r/discussions")
+
+    def test_url_empty_repo_is_inbox(self):
+        self.assertEqual(model.notification_url("Issue", None, ""),
+                         "https://github.com/notifications")
+
+    def test_url_unknown_type_repo_root(self):
+        self.assertEqual(model.notification_url("Mystery", None, "o/r"),
+                         "https://github.com/o/r")
+
+    def test_every_url_is_web_url(self):
+        cases = [
+            ("PullRequest", "https://api.github.com/repos/o/r/pulls/1", "o/r"),
+            ("Issue", None, "o/r"),
+            ("CheckSuite", "https://api.github.com/repos/o/r/check-suites/2", "o/r"),
+            ("Mystery", None, ""),
+            ("Discussion", "https://api.github.com/organizations/x", "o/r"),
+            ("RepositoryInvitation", None, "o/r"),
+        ]
+        for st, su, rf in cases:
+            self.assertTrue(model.is_web_url(model.notification_url(st, su, rf)),
+                            (st, su, rf))
+
+    def test_notifitem_shape(self):
+        it = model.NotifItem("g", "o/r", "#1", "review", "high", 1.0, "t",
+                             "https://github.com/o/r")
+        self.assertEqual(it.glyph, "g")
+        self.assertEqual(it.urgency, "high")
+        self.assertEqual(it.updated_at, 1.0)
+        self.assertEqual(it._fields,
+            ("glyph", "repo", "number", "reason_label", "urgency",
+             "updated_at", "title", "url"))
+
+
 class TestIsWebUrl(unittest.TestCase):
     def test_http_and_https_allowed(self):
         self.assertTrue(model.is_web_url("http://x/y"))
@@ -152,6 +248,27 @@ class TestNormalizeFeed(unittest.TestCase):
     def test_items_lower_clamp(self):
         f = model.normalize_feed({"type": "rss", "url": "https://x/y", "items": 0})
         self.assertEqual(f["items"], 1)             # clamped up to the 1..10 floor
+
+    def test_notifications_minimal(self):
+        f = model.normalize_feed({"type": "notifications"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["type"], "notifications")
+        self.assertEqual(f["items"], 5)
+        self.assertEqual(f["interval"], 300)
+        self.assertEqual(f["title"], "Notifications")
+        self.assertNotIn("url", f)
+        self.assertNotIn("repo", f)
+
+    def test_notifications_items_clamped(self):
+        self.assertEqual(model.normalize_feed({"type": "notifications", "items": 99})["items"], 10)
+        self.assertEqual(model.normalize_feed({"type": "notifications", "items": 0})["items"], 1)
+
+    def test_notifications_interval_floor_120(self):
+        self.assertEqual(model.normalize_feed({"type": "notifications", "interval": 5})["interval"], 120)
+        self.assertEqual(model.normalize_feed({"type": "notifications", "interval": 600})["interval"], 600)
+
+    def test_notifications_custom_title(self):
+        self.assertEqual(model.normalize_feed({"type": "notifications", "title": "Inbox"})["title"], "Inbox")
 
 
 class TestDueFeeds(unittest.TestCase):

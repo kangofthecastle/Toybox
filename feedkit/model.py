@@ -9,6 +9,12 @@ import urllib.parse
 Item = namedtuple("Item", ["text", "url"])            # url may be None
 Status = namedtuple("Status", ["text", "state", "url"])  # state: success/failure/pending/none
 
+NotifItem = namedtuple("NotifItem",
+    ["glyph", "repo", "number", "reason_label", "urgency", "updated_at", "title", "url"])
+# urgency is the tier string "high"/"normal"/"low" -- the HUD maps it to a palette
+# color. number is a display token ("#34" or ""). updated_at is a float unix
+# timestamp (0.0 when the API value was missing/unparseable).
+
 # C0 (except the whitespace we normalize), DEL, and C1 control ranges.
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _WS = re.compile(r"\s+")
@@ -79,7 +85,102 @@ def github_headers(token):
     return headers
 
 
-_VALID_TYPES = ("rss", "json", "text", "github")
+# --- notifications classification (single source of truth; see spec §2) -------
+_NOTIF_GLYPHS = {
+    "PullRequest": "⇄",                    # ⇄
+    "Issue": "◉",                          # ◉
+    "Discussion": "\U0001f4ac",                 # 💬
+    "Release": "\U0001f3f7",                    # 🏷
+    "CheckSuite": "⚑",                     # ⚑
+    "WorkflowRun": "⚑",
+    "Commit": "◉",
+    "RepositoryVulnerabilityAlert": "⚑",
+    "SecurityAdvisory": "⚑",
+    "RepositoryDependabotAlertsThread": "⚑",
+}
+_NOTIF_DEFAULT_GLYPH = "◉"                 # ◉
+
+# reason -> (label <=8 chars, urgency tier)
+_NOTIF_REASONS = {
+    "review_requested": ("review", "high"),
+    "mention": ("@you", "high"),
+    "team_mention": ("@team", "high"),
+    "assign": ("assign", "high"),
+    "author": ("author", "high"),
+    "approval_requested": ("approve", "high"),
+    "security_alert": ("security", "high"),
+    "comment": ("comment", "normal"),
+    "state_change": ("update", "normal"),
+    "ci_activity": ("CI", "normal"),
+    "manual": ("manual", "normal"),
+    "invitation": ("invite", "normal"),
+    "push": ("push", "normal"),
+    "subscribed": ("watch", "low"),
+    "your_activity": ("you", "low"),
+    "security_advisory_credit": ("credit", "low"),
+    "member_feature_requested": ("feature", "low"),
+}
+
+# subject.type -> repo-relative fallback subpage when the api URL is null/non-/repos
+_NOTIF_FALLBACK = {
+    "PullRequest": "/pulls",
+    "Issue": "/issues",
+    "Discussion": "/discussions",
+    "Release": "/releases",
+    "CheckSuite": "/actions",
+    "WorkflowRun": "/actions",
+    "Commit": "/commits",
+    "RepositoryVulnerabilityAlert": "/security/dependabot",
+    "SecurityAdvisory": "/security/advisories",
+    "RepositoryDependabotAlertsThread": "/security/dependabot",
+}
+
+_NOTIF_API_PREFIX = "https://api.github.com/repos/"
+
+
+def glyph_for(subject_type):
+    """Type glyph for a notification subject. Unknown types -> ◉."""
+    return _NOTIF_GLYPHS.get(subject_type, _NOTIF_DEFAULT_GLYPH)
+
+
+def reason_label(reason):
+    """Short (<=8 char) label for a notification reason. Unknown -> the reason
+    with underscores spaced, truncated to 8 chars."""
+    info = _NOTIF_REASONS.get(reason)
+    if info:
+        return info[0]
+    return (reason or "").replace("_", " ")[:8]
+
+
+def urgency_for(reason):
+    """Urgency tier ('high'/'normal'/'low') for a reason. Unknown -> 'low'."""
+    info = _NOTIF_REASONS.get(reason)
+    return info[1] if info else "low"
+
+
+def notification_url(subject_type, subject_url, repo_full):
+    """Map a notification's (possibly null) api.github.com subject URL to a
+    browser github.com URL. ALWAYS returns an https://github.com/... literal so
+    is_web_url is always True; PR/Issue get exact deep links, exotic/null cases
+    fall back to a safe repo subpage (never a dead api URL, never a crash)."""
+    if not repo_full:
+        return "https://github.com/notifications"
+    repo_base = "https://github.com/" + repo_full
+    if subject_url and subject_url.startswith(_NOTIF_API_PREFIX):
+        tail = subject_url[len(_NOTIF_API_PREFIX):]      # "owner/name/pulls/34"
+        if subject_type == "PullRequest":
+            tail = tail.replace("/pulls/", "/pull/", 1)
+        elif subject_type == "Commit":
+            tail = tail.replace("/commits/", "/commit/", 1)
+        elif subject_type == "SecurityAdvisory":
+            tail = tail.replace("/security-advisories/", "/security/advisories/", 1)
+        elif subject_type == "CheckSuite":
+            return repo_base + "/actions"                # no web page for a suite id
+        return "https://github.com/" + tail
+    return repo_base + _NOTIF_FALLBACK.get(subject_type, "")
+
+
+_VALID_TYPES = ("rss", "json", "text", "github", "notifications")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
@@ -142,6 +243,14 @@ def normalize_feed(raw):
         elif ftype == "text":
             rgx = raw.get("regex")
             out["regex"] = rgx if isinstance(rgx, str) and rgx else None
+        return out
+
+    if ftype == "notifications":
+        # default 300 / floor 120 differs from the generic floor=300 line above,
+        # so set interval here explicitly. No url/repo required; never raises.
+        out["items"] = _coerce_int(raw.get("items"), 5, 1, 10)
+        out["interval"] = _coerce_int(raw.get("interval"), 300, 120, 86400)
+        out["title"] = title or "Notifications"
         return out
 
     # github
