@@ -12,7 +12,8 @@ import feedkit.fetch as fetch_mod
 import feedkit.model as model
 import feedkit.parse as parse
 
-FeedResult = namedtuple("FeedResult", ["state", "items", "status", "error"])
+FeedResult = namedtuple("FeedResult", ["state", "items", "status", "error", "badge"],
+                        defaults=(None,))
 
 
 class FeedManager:
@@ -27,6 +28,7 @@ class FeedManager:
         self._lock = threading.Lock()
         self._last = {}      # idx -> elapsed seconds at last fetch
         self._cache = {}     # cache key -> per-source {etag, lm, result/ci/notif}
+        self._poll_min = {}  # idx -> server-requested min seconds (X-Poll-Interval)
         self._start = None
 
     # --- lifecycle ------------------------------------------------------
@@ -54,6 +56,7 @@ class FeedManager:
             self.feeds = [model.normalize_feed(f) for f in feeds]
             self._last.clear()
             self._cache.clear()
+            self._poll_min.clear()
 
     def set_token(self, token):
         with self._lock:
@@ -75,7 +78,21 @@ class FeedManager:
             feeds = list(self.feeds)
             token = self.token
             last = dict(self._last)
-        for idx in model.due_feeds(feeds, last, now):
+            poll_min = dict(self._poll_min)
+        # For notifications feeds the server may ask us to poll no faster than
+        # X-Poll-Interval; raise the effective interval for the due check only
+        # (due_feeds itself stays pure). Indices/order match `feeds`.
+        due_view = feeds
+        if poll_min:
+            due_view = []
+            for i, f in enumerate(feeds):
+                pm = poll_min.get(i, 0)
+                if (pm and f.get("valid") and f.get("type") == "notifications"
+                        and pm > f.get("interval", 0)):
+                    f = dict(f)
+                    f["interval"] = pm
+                due_view.append(f)
+        for idx in model.due_feeds(due_view, last, now):
             feed = feeds[idx]
             try:
                 result = self._fetch_and_process(idx, feed, token)
@@ -86,6 +103,8 @@ class FeedManager:
             self._queue.put((idx, result))
 
     def _fetch_and_process(self, idx, feed, token):
+        if feed["type"] == "notifications":
+            return self._process_notifications(idx, feed, token)
         if feed["type"] == "github":
             return self._process_github(idx, feed, token)
         with self._lock:
@@ -161,3 +180,34 @@ class FeedManager:
         status = parse.compose_github_status(repo, branch, ci_state, notif, ci_shown=("ci" in show))
         state = "error" if (error and ci_state == "none") else "ok"
         return FeedResult(state, [], status, error)
+
+    def _process_notifications(self, idx, feed, token):
+        """Global all-repos notifications. Single cache key = idx (one request,
+        unlike github's compound ci/notif keys). Stale-on-error/bad-data carries
+        the previous items + badge; honors the server's X-Poll-Interval."""
+        if not token:
+            return FeedResult("error", [], None, "no github_token", None)
+        with self._lock:
+            cache = self._cache.get(idx, {})
+        res = self._fetch(model.github_notifications_url(),
+                          headers=model.github_headers(token),
+                          etag=cache.get("etag"), last_modified=cache.get("lm"))
+        prev = cache.get("result")
+        if res.status == "not_modified":
+            return prev or FeedResult("ok", [], None, None, 0)
+        if res.status == "error":
+            return FeedResult("stale" if prev else "error",
+                              prev.items if prev else [], None, res.error,
+                              prev.badge if prev else None)
+        try:
+            items, total = parse.parse_notification_items(res.body, feed["items"])
+        except Exception:
+            return FeedResult("stale" if prev else "error",
+                              prev.items if prev else [], None, "bad data",
+                              prev.badge if prev else None)
+        result = FeedResult("ok", items, None, None, total)
+        with self._lock:
+            self._cache[idx] = {"etag": res.etag, "lm": res.last_modified, "result": result}
+            if res.poll_interval:
+                self._poll_min[idx] = res.poll_interval
+        return result
