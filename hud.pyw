@@ -14,6 +14,9 @@ import tkinter as tk
 import winkit.window as window
 import winkit.metrics as metrics
 import config
+import webbrowser
+import feedkit.manager as feedmanager
+import feedkit.model as feedmodel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
@@ -38,6 +41,23 @@ RAM_COLOR = "#ff5cc8"  # magenta
 FONT = ("Consolas", 11)
 CLOCK_FONT = ("Consolas", 11, "bold")
 
+FEED_FONT = ("Consolas", 9)
+FEED_TITLE_FONT = ("Consolas", 9, "bold")
+FEED_FG = "#c8c8d4"
+FEED_DIM = "#6a6a78"
+FEED_LINE_H = 15          # px per feed line
+FEED_TITLE_GAP = 4        # px above each feed block
+FEED_MAX_CHARS = 30       # truncate any feed text (title or item) to fit 220px
+STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
+             "pending": "#d29922", "none": "#6a6a78"}
+
+
+def _fit(text):
+    """Truncate any feed line/title to FEED_MAX_CHARS so a long headline or repo
+    name can't overflow the 220px width."""
+    return text if len(text) <= FEED_MAX_CHARS else text[:FEED_MAX_CHARS - 1] + "…"
+
+
 ALPHA_PRESETS = (1.0, 0.85, 0.60)
 
 
@@ -59,6 +79,14 @@ class Hud:
         self._drag_dy = 0
         self._moved = False
         self.lock_var = tk.BooleanVar(value=bool(cfg["hud"]["locked"]))
+        self.CFG_PATH = CFG_PATH  # exposed for the settings window's config.save
+        self.feed_state = {}      # idx -> feedmanager.FeedResult
+        self._hit = []            # [(y0, y1, url)] for click-to-open (http/https only)
+        self._feed_items = []     # canvas item ids to clear on each feed redraw
+        self._drain_after = None  # pending after() id so close() can cancel it
+        self.settings = None      # FeedSettingsWindow singleton (Task 11)
+        token = self._github_token()
+        self.manager = feedmanager.FeedManager(cfg.get("feeds", []), token=token)
 
         self.canvas = tk.Canvas(
             root, width=WIDTH, height=HEIGHT, bg=BG,
@@ -99,7 +127,11 @@ class Hud:
         self.menu.add_command(label="Close", command=root.destroy)
 
         self._draw()       # paint something immediately (before first tick)
+        self._draw_feeds()
+        if not _smoke_ms():
+            self.manager.start()   # no worker / no network under smoke launches
         self.tick()
+        self._drain_feeds()
 
     # --- dragging ---------------------------------------------------------
     def _on_press(self, event):
@@ -180,6 +212,107 @@ class Hud:
         self.canvas.coords(line_id, *pts)
         self.canvas.itemconfig(line_id, state="normal")
 
+    # --- feeds ------------------------------------------------------------
+    def _github_token(self):
+        return os.environ.get("TOYBOX_GITHUB_TOKEN") or self.cfg["hud"].get("github_token", "")
+
+    def _drain_feeds(self):
+        self._drain_after = None
+        for idx, result in self.manager.drain():
+            self.feed_state[idx] = result
+        try:
+            self._draw_feeds()
+        except tk.TclError:
+            return                                  # window gone; stop the loop
+        self._drain_after = self.root.after(250, self._drain_feeds)
+
+    def _feed_tiles(self):
+        """Yield (title, title_url, color, lines) per configured feed. title_url is
+        the click target for the title line (None for non-github feeds); lines is a
+        list of (text, url, dim). Pulls live results from feed_state, falling back
+        to a 'loading'/error placeholder. A github tile surfaces result.error even
+        when CI itself returned ok (e.g. a bad notifications token)."""
+        for idx, feed in enumerate(self.manager.feeds):
+            title = feed.get("title") or "feed"
+            if not feed.get("valid"):
+                yield (title, None, FEED_DIM, [("! " + (feed.get("error") or "invalid"), None, True)])
+                continue
+            result = self.feed_state.get(idx)
+            if result is None:
+                yield (title, None, FEED_FG, [("loading…", None, True)])
+                continue
+            if result.status is not None:                 # github tile
+                color = STATE_HEX.get(result.status.state, FEED_DIM)
+                lines = [("! " + result.error, None, True)] if result.error else []
+                yield (result.status.text, result.status.url, color, lines)
+                continue
+            dim = result.state in ("stale", "error")
+            lines = [(it.text, it.url, dim) for it in result.items]
+            if result.error:
+                lines = [("! " + result.error, None, True)] + lines
+            if not lines:
+                lines = [("(empty)", None, True)]
+            yield (title, None, FEED_FG, lines)
+
+    def _register_hit(self, y, url):
+        """Record a clickable region for the line centered at y -- but ONLY for
+        http/https URLs, so attacker-controlled feed content can't launch
+        file://, javascript:, data:, or custom-scheme URLs."""
+        if url and feedmodel.is_web_url(url):
+            self._hit.append((y - FEED_LINE_H // 2, y + FEED_LINE_H // 2, url))
+
+    def _draw_feeds(self):
+        c = self.canvas
+        for item_id in self._feed_items:
+            c.delete(item_id)
+        self._feed_items = []
+        self._hit = []
+        y = PAD + 3 * ROW_H + 4
+        for title, title_url, color, lines in self._feed_tiles():
+            y += FEED_TITLE_GAP
+            tid = c.create_text(PAD, y, anchor="w", text=_fit(title),
+                                fill=color, font=FEED_TITLE_FONT)
+            self._feed_items.append(tid)
+            self._register_hit(y, title_url)            # github header is clickable
+            y += FEED_LINE_H
+            for text, url, dim in lines:
+                lid = c.create_text(PAD + 6, y, anchor="w", text=_fit(text),
+                                    fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
+                self._feed_items.append(lid)
+                self._register_hit(y, url)
+                y += FEED_LINE_H
+        self._resize(y + PAD)
+
+    def _resize(self, wanted_h):
+        sh = self.root.winfo_screenheight()
+        new_h = max(HEIGHT, min(int(wanted_h), sh - self.root.winfo_y()))
+        if new_h != self.root.winfo_height():
+            self.canvas.config(height=new_h)
+            self.root.geometry("%dx%d" % (WIDTH, new_h))
+
+    def _feed_has_text(self, needle):
+        for item_id in self._feed_items:
+            if needle in self.canvas.itemcget(item_id, "text"):
+                return True
+        return False
+
+    def close(self):
+        # Cleanup only -- never destroys the root (mirrors petkit Cat.close). The
+        # single root.destroy() is the quit path in main(); close() runs after it
+        # (in main's finally) and the tests call close() then destroy() themselves.
+        if self._drain_after is not None:
+            try:
+                self.root.after_cancel(self._drain_after)
+            except Exception:
+                pass
+            self._drain_after = None
+        try:
+            self.manager.stop()
+        except Exception:
+            pass
+        if getattr(self, "settings", None) is not None:
+            self.settings.close()
+
 
 def main():
     if not _smoke_ms() and not startup.acquire_single_instance("Toybox_hud"):
@@ -211,13 +344,16 @@ def main():
     root.update()  # realize the HWND before touching ex-styles
     window.apply_overlay_styles(root, clickthrough=False, tool_window=True)
 
-    Hud(root, cfg)
+    hud = Hud(root, cfg)
     startup.watch_for_quit("Toybox_hud", root.after, root.destroy)
 
     ms = _smoke_ms()
     if ms:
         root.after(ms, root.destroy)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        hud.close()        # cleanup after the single root.destroy() (stops the worker)
 
 
 if __name__ == "__main__":
