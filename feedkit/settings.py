@@ -10,7 +10,13 @@ from tkinter import ttk
 import config
 import feedkit.model as model
 
-_TYPES = ("rss", "json", "text", "github", "notifications")
+_TYPES = ("rss", "json", "text", "github", "notifications", "search")
+
+_SEARCH_PRESETS = {
+    "My open PRs": "is:open is:pr author:@me",
+    "Awaiting my review": "is:open is:pr review-requested:@me",
+    "Assigned to me": "is:open assignee:@me",
+}
 
 
 class FeedSettingsWindow:
@@ -84,6 +90,8 @@ class FeedSettingsWindow:
             "github": [("title", "Title"), ("repo", "owner/name"), ("branch", "Branch"),
                        ("interval", "Interval s")],
             "notifications": [("title", "Title"), ("items", "Items"), ("interval", "Interval s")],
+            "search": [("title", "Title"), ("query", "Query"),
+                       ("items", "Items"), ("interval", "Interval s")],
         }[ftype]
         for key, label in spec:
             row = tk.Frame(self._fields_frame); row.pack(anchor="w", pady=1)
@@ -97,7 +105,20 @@ class FeedSettingsWindow:
             crow = tk.Frame(self._fields_frame); crow.pack(anchor="w", pady=1)
             tk.Checkbutton(crow, text="CI", variable=self._show_ci).pack(side="left")
             tk.Checkbutton(crow, text="Notifications", variable=self._show_notif).pack(side="left")
+        if ftype == "search":
+            prow = tk.Frame(self._fields_frame); prow.pack(anchor="w", pady=1)
+            tk.Label(prow, text="Preset", width=10, anchor="w").pack(side="left")
+            self._preset_var = tk.StringVar(value="")
+            tk.OptionMenu(prow, self._preset_var, *_SEARCH_PRESETS,
+                          command=self._apply_search_preset).pack(side="left")
         tk.Button(self._fields_frame, text="Add feed", command=self._on_add).pack(anchor="w", pady=4)
+
+    def _apply_search_preset(self, name):
+        """Fill the Query field from a named preset so the GitHub search syntax
+        never has to be typed."""
+        query = _SEARCH_PRESETS.get(name)
+        if query and "query" in self._fields:
+            self._fields["query"].set(query)
 
     def _on_add(self):
         ftype = self._type_var.get()
@@ -116,6 +137,10 @@ class FeedSettingsWindow:
                 show.append("notifications")
             raw["show"] = show
         elif ftype == "notifications":
+            if g("items"):
+                raw["items"] = _as_int(g("items"))
+        elif ftype == "search":
+            raw["query"] = g("query")
             if g("items"):
                 raw["items"] = _as_int(g("items"))
         else:

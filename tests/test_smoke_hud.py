@@ -209,6 +209,52 @@ class TestFeedSettings(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_search_render_fields_has_query(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("search")
+            hud.settings._render_fields()
+            self.assertIn("query", hud.settings._fields)
+            self.assertIn("items", hud.settings._fields)
+            self.assertNotIn("url", hud.settings._fields)
+            self.assertNotIn("repo", hud.settings._fields)
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_search_preset_fills_query(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("search")
+            hud.settings._render_fields()
+            hud.settings._apply_search_preset("My open PRs")
+            self.assertEqual(hud.settings._fields["query"].get(),
+                             "is:open is:pr author:@me")
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_search_on_add_builds_query_feed(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("search")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("My PRs")
+            hud.settings._fields["query"].set("is:open is:pr author:@me")
+            hud.settings._fields["items"].set("5")
+            hud.settings._on_add()
+            added = hud.cfg["feeds"][-1]
+            self.assertEqual(added["type"], "search")
+            self.assertEqual(added["query"], "is:open is:pr author:@me")
+            self.assertEqual(added["items"], 5)
+            self.assertTrue(hud.manager.feeds[-1]["valid"])
+            hud.close()
+        finally:
+            root.destroy()
+
 
 def _fill_of(hud, needle):
     """Fill color of the first feed canvas item whose text contains needle."""
