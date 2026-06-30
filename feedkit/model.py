@@ -80,6 +80,19 @@ def github_mark_all_read_url():
     return "%s/notifications" % GITHUB_API
 
 
+def github_search_url(query, per_page):
+    """Issue/PR search endpoint, newest-updated first. `query` is the raw GitHub
+    search expression (e.g. 'is:open is:pr author:@me'); it is percent-encoded."""
+    return "%s/search/issues?q=%s&sort=updated&order=desc&per_page=%d" % (
+        GITHUB_API, urllib.parse.quote(query), per_page)
+
+
+def github_search_web_url(query):
+    """github.com search UI for `query` (covers issues and PRs). Used as the
+    click target for a search tile's header and its '… N more' overflow line."""
+    return "https://github.com/search?q=%s&type=issues" % urllib.parse.quote(query)
+
+
 def github_headers(token):
     """Mandatory GitHub REST headers. User-Agent is required (urllib's default UA
     gets a 403). Authorization is added only when a token is present."""
@@ -188,7 +201,7 @@ def notification_url(subject_type, subject_url, repo_full):
     return repo_base + _NOTIF_FALLBACK.get(subject_type, "")
 
 
-_VALID_TYPES = ("rss", "json", "text", "github", "notifications")
+_VALID_TYPES = ("rss", "json", "text", "github", "notifications", "search")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
@@ -259,6 +272,21 @@ def normalize_feed(raw):
         out["items"] = _coerce_int(raw.get("items"), 5, 1, 10)
         out["interval"] = _coerce_int(raw.get("interval"), 300, 120, 86400)
         out["title"] = title or "Notifications"
+        return out
+
+    if ftype == "search":
+        # floor 120 / default 300 (the search API allows 30 req/min authenticated),
+        # so set interval explicitly here like the notifications branch.
+        out["items"] = _coerce_int(raw.get("items"), 5, 1, 10)
+        out["interval"] = _coerce_int(raw.get("interval"), 300, 120, 86400)
+        query = raw.get("query")
+        query = query.strip() if isinstance(query, str) else ""
+        if not query:
+            out.update(valid=False, error="search feed needs 'query'",
+                       title=title or "Search")
+            return out
+        out["query"] = query
+        out["title"] = title or "Search"
         return out
 
     # github

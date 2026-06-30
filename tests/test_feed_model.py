@@ -52,6 +52,19 @@ class TestGithubBuilders(unittest.TestCase):
         self.assertEqual(model.github_mark_all_read_url(),
                          "https://api.github.com/notifications")
 
+    def test_search_url_encodes_query(self):
+        self.assertEqual(
+            model.github_search_url("is:open is:pr author:@me", 5),
+            "https://api.github.com/search/issues?q=is%3Aopen%20is%3Apr%20author%3A%40me"
+            "&sort=updated&order=desc&per_page=5")
+
+    def test_search_web_url_is_browser_url(self):
+        url = model.github_search_web_url("is:open is:pr author:@me")
+        self.assertEqual(
+            url,
+            "https://github.com/search?q=is%3Aopen%20is%3Apr%20author%3A%40me&type=issues")
+        self.assertTrue(model.is_web_url(url))
+
     def test_headers_without_token_have_no_authorization(self):
         h = model.github_headers("")
         self.assertEqual(h["User-Agent"], "Toybox-WebFeed/1.0")
@@ -286,6 +299,37 @@ class TestNormalizeFeed(unittest.TestCase):
 
     def test_notifications_custom_title(self):
         self.assertEqual(model.normalize_feed({"type": "notifications", "title": "Inbox"})["title"], "Inbox")
+
+    def test_search_minimal_valid(self):
+        f = model.normalize_feed({"type": "search", "query": "is:open is:pr author:@me"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["query"], "is:open is:pr author:@me")
+        self.assertEqual(f["items"], 5)
+        self.assertEqual(f["interval"], 300)
+        self.assertEqual(f["title"], "Search")
+
+    def test_search_missing_query_invalid(self):
+        self.assertFalse(model.normalize_feed({"type": "search"})["valid"])
+        blank = model.normalize_feed({"type": "search", "query": "   "})
+        self.assertFalse(blank["valid"])
+        self.assertEqual(blank["error"], "search feed needs 'query'")
+
+    def test_search_interval_floor_120(self):
+        self.assertEqual(
+            model.normalize_feed({"type": "search", "query": "x", "interval": 5})["interval"], 120)
+        self.assertEqual(
+            model.normalize_feed({"type": "search", "query": "x", "interval": 600})["interval"], 600)
+
+    def test_search_items_clamped(self):
+        self.assertEqual(
+            model.normalize_feed({"type": "search", "query": "x", "items": 99})["items"], 10)
+        self.assertEqual(
+            model.normalize_feed({"type": "search", "query": "x", "items": 0})["items"], 1)
+
+    def test_search_custom_title_and_strips_query(self):
+        f = model.normalize_feed({"type": "search", "query": "  is:open  ", "title": "My PRs"})
+        self.assertEqual(f["title"], "My PRs")
+        self.assertEqual(f["query"], "is:open")
 
 
 class TestDueFeeds(unittest.TestCase):
