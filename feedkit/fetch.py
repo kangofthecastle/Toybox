@@ -15,6 +15,8 @@ FetchResult = namedtuple(
     ["status", "body", "content_type", "etag", "last_modified", "error", "poll_interval"],
     defaults=(None,))
 
+SendResult = namedtuple("SendResult", ["status", "code", "error"], defaults=(None, None))
+
 _DEFAULT_UA = "Toybox-WebFeed/1.0"
 
 
@@ -68,3 +70,21 @@ def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_byte
         return FetchResult("error", None, None, None, None, _error_word(exc))
     except (urllib.error.URLError, TimeoutError) as exc:
         return FetchResult("error", None, None, None, None, _error_word(exc))
+
+
+def send(url, method, headers=None, timeout=12):
+    """Fire a bodyless mutating request (PATCH a thread, PUT /notifications) for
+    the mark-as-read actions. Any 2xx -> SendResult('ok', code, None); failures
+    map through the same taxonomy as fetch(). TLS uses the default verifying
+    context (never weakened); no response body is read."""
+    request_headers = {"User-Agent": _DEFAULT_UA}
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, method=method, headers=request_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return SendResult("ok", response.status, None)
+    except urllib.error.HTTPError as exc:
+        return SendResult("error", exc.code, _error_word(exc))
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return SendResult("error", None, _error_word(exc))

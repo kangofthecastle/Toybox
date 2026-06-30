@@ -45,6 +45,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
 
+    def do_PATCH(self):
+        if self.path == "/thread":
+            self.send_response(205); self.end_headers()
+        elif self.path == "/forbidden":
+            self.send_response(401); self.end_headers()
+        else:
+            self.send_response(404); self.end_headers()
+
+    def do_PUT(self):
+        if self.path == "/notifications":
+            self.send_response(202); self.end_headers()
+        else:
+            self.send_response(404); self.end_headers()
+
 
 class TestFetch(unittest.TestCase):
     @classmethod
@@ -108,6 +122,27 @@ class TestFetch(unittest.TestCase):
     def test_poll_interval_none_when_non_int(self):
         r = fetch.fetch(self._url("/pollbad"))
         self.assertIsNone(r.poll_interval)
+
+    def test_send_patch_2xx_is_ok(self):
+        r = fetch.send(self._url("/thread"), "PATCH")
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.code, 205)
+
+    def test_send_put_2xx_is_ok(self):
+        r = fetch.send(self._url("/notifications"), "PUT")
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.code, 202)
+
+    def test_send_http_error_is_error_word(self):
+        r = fetch.send(self._url("/forbidden"), "PATCH")
+        self.assertEqual(r.status, "error")
+        self.assertEqual(r.code, 401)
+        self.assertEqual(r.error, "bad token")
+
+    def test_send_connection_refused_is_offline(self):
+        r = fetch.send("http://127.0.0.1:1/x", "PUT")
+        self.assertEqual(r.status, "error")
+        self.assertEqual(r.error, "offline")
 
 
 class TestErrorWord(unittest.TestCase):
