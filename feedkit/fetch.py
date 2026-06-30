@@ -11,7 +11,9 @@ from collections import namedtuple
 from feedkit.model import build_conditional_headers
 
 FetchResult = namedtuple(
-    "FetchResult", ["status", "body", "content_type", "etag", "last_modified", "error"])
+    "FetchResult",
+    ["status", "body", "content_type", "etag", "last_modified", "error", "poll_interval"],
+    defaults=(None,))
 
 _DEFAULT_UA = "Toybox-WebFeed/1.0"
 
@@ -36,6 +38,15 @@ def _error_word(exc):
     return "error"
 
 
+def _poll_interval(response):
+    """The server's requested minimum seconds between polls (GitHub's
+    X-Poll-Interval), or None when absent / non-integer."""
+    try:
+        return int(response.headers.get("X-Poll-Interval"))
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_bytes=1_000_000):
     request_headers = {"User-Agent": _DEFAULT_UA}
     if headers:
@@ -49,7 +60,8 @@ def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_byte
                 return FetchResult("error", None, None, None, None, "too large")
             return FetchResult("ok", body, response.headers.get("Content-Type"),
                                response.headers.get("ETag"),
-                               response.headers.get("Last-Modified"), None)
+                               response.headers.get("Last-Modified"), None,
+                               _poll_interval(response))
     except urllib.error.HTTPError as exc:
         if exc.code == 304:
             return FetchResult("not_modified", None, None, etag, last_modified, None)
