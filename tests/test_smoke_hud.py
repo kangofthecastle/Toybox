@@ -134,5 +134,40 @@ class TestHudClickAndMenu(_HudTestBase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestFeedSettings(_HudTestBase):
+    def test_open_add_feed_and_save(self):
+        # isolate_cfg points hud.CFG_PATH at a temp file so saving never touches
+        # the user's real config.json.
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            self.assertIsNotNone(hud.settings.win)
+            # Add an rss feed programmatically through the window's helper.
+            hud.settings._add_feed_dict({"type": "rss", "url": "https://x/y", "title": "X"})
+            self.assertEqual(hud.cfg["feeds"][-1]["url"], "https://x/y")
+            self.assertEqual(hud.manager.feeds[-1].get("url"), "https://x/y")
+            # Test button reports a status (offline here, since fetch is stubbed).
+            hud.settings._on_test_token()
+            self.assertEqual(hud.settings._token_status.get(), "offline")
+            hud._open_feed_settings()                 # singleton: still one window
+            hud.close()                               # closes settings too
+        finally:
+            root.destroy()
+
+    def test_github_add_row_has_show_controls(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("github")
+            hud.settings._render_fields()
+            # CI + Notifications checkbuttons exist and default to on.
+            self.assertEqual(hud.settings._show_ci.get(), 1)
+            self.assertEqual(hud.settings._show_notif.get(), 1)
+            hud.close()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
