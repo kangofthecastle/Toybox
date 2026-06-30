@@ -17,10 +17,11 @@ FeedResult = namedtuple("FeedResult", ["state", "items", "status", "error", "bad
 
 
 class FeedManager:
-    def __init__(self, feeds, token="", fetch_fn=None, poll_interval=1.0):
+    def __init__(self, feeds, token="", fetch_fn=None, poll_interval=1.0, send_fn=None):
         self.feeds = [model.normalize_feed(f) for f in feeds]
         self.token = token or ""
         self._fetch = fetch_fn or fetch_mod.fetch
+        self._send = send_fn or fetch_mod.send
         self._poll = poll_interval
         self._queue = queue.Queue()
         self._stop = threading.Event()
@@ -29,6 +30,7 @@ class FeedManager:
         self._last = {}      # idx -> elapsed seconds at last fetch
         self._cache = {}     # cache key -> per-source {etag, lm, result/ci/notif}
         self._poll_min = {}  # idx -> server-requested min seconds (X-Poll-Interval)
+        self._actions = queue.Queue()  # pending mark-as-read actions (thread-safe)
         self._start = None
 
     # --- lifecycle ------------------------------------------------------
@@ -57,10 +59,26 @@ class FeedManager:
             self._last.clear()
             self._cache.clear()
             self._poll_min.clear()
+        self._clear_actions()   # drop actions aimed at the now-replaced feed set
 
     def set_token(self, token):
         with self._lock:
             self.token = token or ""
+
+    def mark_read(self, idx, thread_url):
+        """Enqueue 'mark this thread read' for the worker (called from the UI)."""
+        self._actions.put(("one", idx, thread_url))
+
+    def mark_all_read(self, idx):
+        """Enqueue 'mark all notifications read' for the worker."""
+        self._actions.put(("all", idx, None))
+
+    def _clear_actions(self):
+        try:
+            while True:
+                self._actions.get_nowait()
+        except queue.Empty:
+            pass
 
     # --- worker ---------------------------------------------------------
     def _run(self):
@@ -72,6 +90,7 @@ class FeedManager:
             self._stop.wait(self._poll)
 
     def _run_once(self, now):
+        self._process_actions(now)   # apply queued mark-as-read before computing due feeds
         # Snapshot shared state under the lock; the blocking fetch runs unlocked so
         # a Settings save (set_feeds/set_token) is never blocked on network I/O.
         with self._lock:
@@ -101,6 +120,45 @@ class FeedManager:
             with self._lock:
                 self._last[idx] = now
             self._queue.put((idx, result))
+
+    def _process_actions(self, now):
+        while True:
+            try:
+                action = self._actions.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._do_action(action, now)
+            except Exception:
+                pass   # one bad action must not stop the worker loop
+
+    def _do_action(self, action, now):
+        """Run one mark-as-read mutation. send() runs UNLOCKED (never hold the lock
+        across network I/O). On success, invalidate the feed's cache + drop its
+        last-fetch time so the due loop refetches and reconciles this tick. On
+        failure, queue a restoring result so the optimistic UI rolls back."""
+        kind, idx = action[0], action[1]
+        with self._lock:
+            token = self.token
+        if kind == "one":
+            target, method = action[2], "PATCH"
+        else:                                   # "all"
+            target, method = model.github_mark_all_read_url(), "PUT"
+        res = self._send(target, method, model.github_headers(token))
+        restore = None
+        with self._lock:
+            if res.status == "ok":
+                entry = self._cache.get(idx, {})
+                entry.pop("etag", None)         # force a fresh 200, not a 304
+                entry.pop("lm", None)
+                self._cache[idx] = entry
+                self._last.pop(idx, None)       # force the feed due this tick
+            else:
+                prev = self._cache.get(idx, {}).get("result")
+                restore = FeedResult("stale", prev.items if prev else [], None,
+                                     "dismiss failed", prev.badge if prev else None)
+        if restore is not None:
+            self._queue.put((idx, restore))
 
     def _fetch_and_process(self, idx, feed, token):
         if feed["type"] == "notifications":

@@ -206,6 +206,81 @@ class TestProcessNotifications(unittest.TestCase):
         self.assertEqual(len(m.drain()), 1)
 
 
+def _send_ok():
+    return fetch.SendResult("ok", 205, None)
+
+
+class TestMarkRead(unittest.TestCase):
+    N2 = (b'[{"id":"1","unread":true,"reason":"mention",'
+          b'"url":"https://api.github.com/notifications/threads/1",'
+          b'"subject":{"type":"Issue","title":"a","url":null},"repository":{"full_name":"o/r"}},'
+          b'{"id":"2","unread":true,"reason":"author",'
+          b'"url":"https://api.github.com/notifications/threads/2",'
+          b'"subject":{"type":"Issue","title":"b","url":null},"repository":{"full_name":"o/r"}}]')
+    N1 = (b'[{"id":"2","unread":true,"reason":"author",'
+          b'"url":"https://api.github.com/notifications/threads/2",'
+          b'"subject":{"type":"Issue","title":"b","url":null},"repository":{"full_name":"o/r"}}]')
+
+    def test_mark_read_forces_refetch_and_reconciles(self):
+        fetches = [_ok(self.N2), _ok(self.N1)]
+        sends = []
+        def fake_fetch(u, **k):
+            return fetches.pop(0)
+        def fake_send(u, method, headers):
+            sends.append((u, method)); return _send_ok()
+        m = manager.FeedManager([{"type": "notifications", "interval": 300}], token="ghp_x",
+                                fetch_fn=fake_fetch, send_fn=fake_send)
+        m._run_once(0.0)                       # initial fetch: 2 items, _last[0]=0
+        m.drain()
+        m.mark_read(0, "https://api.github.com/notifications/threads/1")
+        m._run_once(5.0)                       # 5 < 300 normally NOT due; the action forces it
+        idx, res = m.drain()[-1]
+        self.assertEqual(sends, [("https://api.github.com/notifications/threads/1", "PATCH")])
+        self.assertEqual(res.state, "ok")
+        self.assertEqual(len(res.items), 1)    # reconciled with the post-dismiss page
+        self.assertEqual(res.badge, 1)
+
+    def test_mark_read_failure_restores_with_dismiss_failed(self):
+        fetches = [_ok(self.N2)]
+        m = manager.FeedManager([{"type": "notifications", "interval": 300}], token="ghp_x",
+                                fetch_fn=lambda u, **k: fetches.pop(0),
+                                send_fn=lambda u, method, headers: fetch.SendResult("error", None, "offline"))
+        m._run_once(0.0); m.drain()            # cache has 2 items
+        m.mark_read(0, "https://api.github.com/notifications/threads/1")
+        m._run_once(5.0)                       # send fails -> restore, NOT due so no refetch
+        idx, res = m.drain()[-1]
+        self.assertEqual(res.state, "stale")
+        self.assertEqual(res.error, "dismiss failed")
+        self.assertEqual(len(res.items), 2)
+        self.assertEqual(res.badge, 2)
+
+    def test_mark_all_read_targets_put_endpoint(self):
+        fetches = [_ok(self.N2), _ok(b"[]")]
+        sends = []
+        def fake_send(u, method, headers):
+            sends.append((u, method)); return _send_ok()
+        m = manager.FeedManager([{"type": "notifications", "interval": 300}], token="ghp_x",
+                                fetch_fn=lambda u, **k: fetches.pop(0), send_fn=fake_send)
+        m._run_once(0.0); m.drain()
+        m.mark_all_read(0)
+        m._run_once(5.0)
+        idx, res = m.drain()[-1]
+        self.assertEqual(sends, [("https://api.github.com/notifications", "PUT")])
+        self.assertEqual(res.state, "ok")
+        self.assertEqual(res.badge, 0)
+        self.assertEqual(len(res.items), 0)
+
+    def test_set_feeds_clears_pending_actions(self):
+        sends = []
+        m = manager.FeedManager([{"type": "notifications"}], token="ghp_x",
+                                fetch_fn=lambda u, **k: _ok(b"[]"),
+                                send_fn=lambda u, method, headers: (sends.append(1), _send_ok())[1])
+        m.mark_read(0, "https://api.github.com/notifications/threads/1")
+        m.set_feeds([{"type": "notifications"}])   # discards the queued action
+        m._run_once(0.0)
+        self.assertEqual(sends, [])                 # send never called
+
+
 class TestFeedResultBadge(unittest.TestCase):
     def test_badge_defaults_none(self):
         self.assertIsNone(manager.FeedResult("ok", [], None, None).badge)
