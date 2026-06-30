@@ -87,5 +87,52 @@ class TestHudFeedRendering(_HudTestBase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudClickAndMenu(_HudTestBase):
+    def test_click_on_item_returns_url(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        root, hud = self._make_hud([{"type": "rss", "url": "https://x", "title": "X"}])
+        try:
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [Item("Headline", "https://example.com/a")], None, None)
+            hud._draw_feeds()
+            root.update_idletasks()
+            y0, y1, url = hud._hit[0]
+            mid = (y0 + y1) // 2
+            self.assertEqual(hud._open_at(10, mid), "https://example.com/a")
+            self.assertIsNone(hud._open_at(10, 2))          # up in the metrics area
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_non_http_url_is_never_clickable(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        root, hud = self._make_hud([{"type": "rss", "url": "https://x", "title": "X"}])
+        try:
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [Item("Sneaky", "file:///etc/passwd")], None, None)
+            hud._draw_feeds()
+            root.update_idletasks()
+            self.assertEqual(hud._hit, [])                  # no region registered
+            self.assertIsNone(hud._open_at(10, 90))         # nothing opens
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_menu_has_feed_entries(self):
+        root, hud = self._make_hud([])
+        try:
+            labels = [hud.menu.entrycget(i, "label")
+                      for i in range(hud.menu.index("end") + 1)
+                      if hud.menu.type(i) == "command"]
+            self.assertIn("Feeds…", labels)
+            self.assertIn("Reload feeds", labels)
+            hud.close()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

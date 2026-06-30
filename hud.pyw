@@ -122,9 +122,12 @@ class Hud:
                 command=lambda p=preset: self._set_alpha(p),
             )
         self.menu.add_separator()
+        self.menu.add_command(label="Feeds…", command=self._open_feed_settings)
+        self.menu.add_command(label="Reload feeds", command=self._reload_feeds)
+        self.menu.add_separator()
         self.menu.add_checkbutton(label="Lock position", variable=self.lock_var,
                                   command=self._toggle_lock)
-        self.menu.add_command(label="Close", command=root.destroy)
+        self.menu.add_command(label="Close", command=root.destroy)   # mainloop's finally runs hud.close()
 
         self._draw()       # paint something immediately (before first tick)
         self._draw_feeds()
@@ -149,6 +152,12 @@ class Hud:
 
     def _on_release(self, event):
         if not self._moved:
+            url = self._open_at(event.x, event.y)
+            if url:
+                try:
+                    webbrowser.open(url, new=2)
+                except Exception:
+                    pass
             return  # a plain click (no drag) must not rewrite config.json
         self._moved = False
         self.cfg["hud"]["x"] = self.root.winfo_x()
@@ -312,6 +321,27 @@ class Hud:
             pass
         if getattr(self, "settings", None) is not None:
             self.settings.close()
+
+    def _open_at(self, x, y):
+        for y0, y1, url in self._hit:
+            if y0 <= y <= y1:
+                return url if feedmodel.is_web_url(url) else None
+        return None
+
+    def _open_feed_settings(self):
+        import feedkit.settings as feedsettings
+        if getattr(self, "settings", None) is None:
+            self.settings = feedsettings.FeedSettingsWindow(self)
+        self.settings.open()
+
+    def _reload_feeds(self):
+        reloaded = config.load(self.CFG_PATH)
+        self.cfg["feeds"] = reloaded.get("feeds", [])
+        self.cfg["hud"]["github_token"] = reloaded["hud"].get("github_token", "")
+        self.feed_state = {}
+        self.manager.set_token(self._github_token())
+        self.manager.set_feeds(self.cfg["feeds"])
+        self._draw_feeds()
 
 
 def main():
