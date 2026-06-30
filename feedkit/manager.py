@@ -163,6 +163,8 @@ class FeedManager:
     def _fetch_and_process(self, idx, feed, token):
         if feed["type"] == "notifications":
             return self._process_notifications(idx, feed, token)
+        if feed["type"] == "search":
+            return self._process_search(idx, feed, token)
         if feed["type"] == "github":
             return self._process_github(idx, feed, token)
         with self._lock:
@@ -268,4 +270,34 @@ class FeedManager:
             self._cache[idx] = {"etag": res.etag, "lm": res.last_modified, "result": result}
             if res.poll_interval:
                 self._poll_min[idx] = res.poll_interval
+        return result
+
+    def _process_search(self, idx, feed, token):
+        """GitHub /search/issues for a saved query (my PRs / reviews / assigned).
+        Single cache key = idx; conditional GET; stale-on-error / bad-data carries
+        the previous items + badge, mirroring _process_notifications. Requires a
+        token (search of private repos / @me needs auth)."""
+        if not token:
+            return FeedResult("error", [], None, "no github_token", None)
+        with self._lock:
+            cache = self._cache.get(idx, {})
+        res = self._fetch(model.github_search_url(feed["query"], feed["items"]),
+                          headers=model.github_headers(token),
+                          etag=cache.get("etag"), last_modified=cache.get("lm"))
+        prev = cache.get("result")
+        if res.status == "not_modified":
+            return prev or FeedResult("ok", [], None, None, 0)
+        if res.status == "error":
+            return FeedResult("stale" if prev else "error",
+                              prev.items if prev else [], None, res.error,
+                              prev.badge if prev else None)
+        try:
+            items, total = parse.parse_search_items(res.body, feed["items"])
+        except Exception:
+            return FeedResult("stale" if prev else "error",
+                              prev.items if prev else [], None, "bad data",
+                              prev.badge if prev else None)
+        result = FeedResult("ok", items, None, None, total)
+        with self._lock:
+            self._cache[idx] = {"etag": res.etag, "lm": res.last_modified, "result": result}
         return result

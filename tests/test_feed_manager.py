@@ -206,6 +206,65 @@ class TestProcessNotifications(unittest.TestCase):
         self.assertEqual(len(m.drain()), 1)
 
 
+class TestProcessSearch(unittest.TestCase):
+    PRS = (b'{"total_count":2,"items":['
+           b'{"number":34,"title":"a","html_url":"https://github.com/o/r/pull/34",'
+           b'"repository_url":"https://api.github.com/repos/o/r","user":{"login":"me"},'
+           b'"updated_at":"2026-06-29T00:00:00Z","pull_request":{"url":"x"}},'
+           b'{"number":35,"title":"b","html_url":"https://github.com/o/r/pull/35",'
+           b'"repository_url":"https://api.github.com/repos/o/r","user":{"login":"me"},'
+           b'"updated_at":"2026-06-29T00:00:00Z","pull_request":{"url":"y"}}]}')
+    FEED = {"type": "search", "query": "is:open is:pr author:@me", "items": 5}
+
+    def test_no_token_is_error(self):
+        m = manager.FeedManager([self.FEED], token="",
+                                fetch_fn=lambda u, **k: _ok(b'{"total_count":0,"items":[]}'))
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "error")
+        self.assertEqual(result.error, "no github_token")
+        self.assertIsNone(result.badge)
+
+    def test_hits_search_endpoint(self):
+        seen = []
+        def fake(u, **k):
+            seen.append(u); return _ok(self.PRS)
+        m = manager.FeedManager([self.FEED], token="ghp_x", fetch_fn=fake)
+        m._run_once(0.0)
+        self.assertIn("/search/issues?q=", seen[0])
+
+    def test_success_badge_is_total(self):
+        m = manager.FeedManager([self.FEED], token="ghp_x",
+                                fetch_fn=lambda u, **k: _ok(self.PRS))
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "ok")
+        self.assertEqual(result.badge, 2)
+        self.assertEqual(len(result.items), 2)
+        self.assertEqual(result.items[0].number, "#34")
+
+    def test_error_after_success_is_stale_with_badge(self):
+        responses = [_ok(self.PRS), _err("offline")]
+        m = manager.FeedManager([self.FEED], token="ghp_x",
+                                fetch_fn=lambda u, **k: responses.pop(0))
+        m._run_once(0.0); m._last.clear(); m._run_once(1000.0)
+        idx, result = m.drain()[-1]
+        self.assertEqual(result.state, "stale")
+        self.assertEqual(result.error, "offline")
+        self.assertEqual(result.badge, 2)
+        self.assertEqual(len(result.items), 2)
+
+    def test_bad_data_after_success_is_stale(self):
+        responses = [_ok(self.PRS), _ok(b"not json{")]
+        m = manager.FeedManager([self.FEED], token="ghp_x",
+                                fetch_fn=lambda u, **k: responses.pop(0))
+        m._run_once(0.0); m._last.clear(); m._run_once(1000.0)
+        idx, result = m.drain()[-1]
+        self.assertEqual(result.state, "stale")
+        self.assertEqual(result.error, "bad data")
+        self.assertEqual(result.badge, 2)
+
+
 def _send_ok():
     return fetch.SendResult("ok", 205, None)
 
