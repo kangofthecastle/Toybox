@@ -11,10 +11,12 @@ import collections
 import time
 
 import tkinter as tk
+import tkinter.font as tkfont
 import winkit.window as window
 import winkit.metrics as metrics
 import config
 import webbrowser
+import timeago
 import feedkit.manager as feedmanager
 import feedkit.model as feedmodel
 
@@ -50,12 +52,20 @@ FEED_TITLE_GAP = 4        # px above each feed block
 FEED_MAX_CHARS = 30       # truncate any feed text (title or item) to fit 220px
 STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
              "pending": "#d29922", "none": "#6a6a78"}
+URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
 
 
 def _fit(text):
     """Truncate any feed line/title to FEED_MAX_CHARS so a long headline or repo
     name can't overflow the 220px width."""
     return text if len(text) <= FEED_MAX_CHARS else text[:FEED_MAX_CHARS - 1] + "…"
+
+
+def _repo_short(full):
+    """Bare repo name (drop the owner/), capped so a long owner can't push the
+    reason label off the right edge of the 220px tile."""
+    name = (full or "").rsplit("/", 1)[-1]
+    return name if len(name) <= 12 else name[:11] + "…"
 
 
 ALPHA_PRESETS = (1.0, 0.85, 0.60)
@@ -93,6 +103,10 @@ class Hud:
             highlightthickness=0, bd=0,
         )
         self.canvas.pack(fill="both", expand=True)
+
+        # Pixel-width measurer for line 1 (emoji glyphs are double-width, so
+        # char-count truncation under-budgets and collides with the age).
+        self._feed_font_measure = tkfont.Font(root=root, family=FEED_FONT[0], size=FEED_FONT[1])
 
         # Persistent canvas items: created once, updated in place each tick
         # (no per-frame create/destroy churn -- matches the lightweight pattern).
@@ -250,6 +264,28 @@ class Hud:
             if result is None:
                 yield (title, None, FEED_FG, [("loading…", None, True)])
                 continue
+            if feed["type"] == "notifications":
+                badge = result.badge or 0          # badge may be None; None>=50 would crash the drain loop
+                header = title + ("  \U0001f514 %s" % ("50+" if badge >= 50 else badge))
+                lines = []
+                if result.error == "no github_token":
+                    lines.append(("! set GitHub token in Settings", None, True))
+                elif result.error and not result.items:
+                    lines.append(("! " + result.error, None, True))
+                elif result.state == "ok" and not result.items:
+                    lines.append(("inbox zero", None, True))
+                stale = result.state != "ok"
+                for it in result.items:
+                    color = FEED_DIM if stale else URGENCY_HEX.get(it.urgency, FEED_FG)
+                    age = "" if it.updated_at <= 0 else timeago.format_ago(time.time() - it.updated_at)
+                    num = (" " + it.number) if it.number else ""
+                    line1 = "%s %s%s · %s" % (it.glyph, _repo_short(it.repo), num, it.reason_label)
+                    lines.append((line1, it.url, color, it.title, age))
+                extra = badge - len(result.items)
+                if extra > 0:
+                    lines.append(("… %d more" % extra, "https://github.com/notifications", True))
+                yield (header, "https://github.com/notifications", FEED_FG, lines)
+                continue
             if result.status is not None:                 # github tile
                 color = STATE_HEX.get(result.status.state, FEED_DIM)
                 lines = [("! " + result.error, None, True)] if result.error else []
@@ -270,6 +306,17 @@ class Hud:
         if url and feedmodel.is_web_url(url):
             self._hit.append((y - FEED_LINE_H // 2, y + FEED_LINE_H // 2, url))
 
+    def _fit_line1(self, text, age):
+        """Truncate line 1 by measured pixel width so it never collides with the
+        right-aligned age. Drops trailing chars and appends an ellipsis."""
+        m = self._feed_font_measure.measure
+        budget = WIDTH - 2 * PAD - m(age) - 8
+        if m(text) <= budget:
+            return text
+        while text and m(text + "…") > budget:
+            text = text[:-1]
+        return text + "…"
+
     def _draw_feeds(self):
         c = self.canvas
         for item_id in self._feed_items:
@@ -284,12 +331,31 @@ class Hud:
             self._feed_items.append(tid)
             self._register_hit(y, title_url)            # github header is clickable
             y += FEED_LINE_H
-            for text, url, dim in lines:
-                lid = c.create_text(PAD + 6, y, anchor="w", text=_fit(text),
-                                    fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
-                self._feed_items.append(lid)
-                self._register_hit(y, url)
-                y += FEED_LINE_H
+            for row in lines:
+                if len(row) == 3:                      # existing single-line path, unchanged
+                    text, url, dim = row
+                    lid = c.create_text(PAD + 6, y, anchor="w", text=_fit(text),
+                                        fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
+                    self._feed_items.append(lid)
+                    self._register_hit(y, url)
+                    y += FEED_LINE_H
+                else:                                  # len == 5: notifications 2-line item
+                    line1, url, color, subtitle, age = row
+                    l1 = c.create_text(PAD + 6, y, anchor="w",
+                                       text=self._fit_line1(line1, age),
+                                       fill=color, font=FEED_FONT)
+                    self._feed_items.append(l1)
+                    if age:
+                        aid = c.create_text(WIDTH - PAD, y, anchor="e", text=age,
+                                            fill=FEED_DIM, font=FEED_FONT)
+                        self._feed_items.append(aid)
+                    self._register_hit(y, url)
+                    y += FEED_LINE_H
+                    l2 = c.create_text(PAD + 12, y, anchor="w", text=_fit(subtitle),
+                                       fill=FEED_DIM, font=FEED_FONT)
+                    self._feed_items.append(l2)
+                    self._register_hit(y, url)         # second band -> whole item opens the thread
+                    y += FEED_LINE_H
         self._resize(y + PAD)
 
     def _resize(self, wanted_h):

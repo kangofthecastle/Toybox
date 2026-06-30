@@ -178,5 +178,114 @@ class TestFeedSettings(_HudTestBase):
             root.destroy()
 
 
+def _fill_of(hud, needle):
+    """Fill color of the first feed canvas item whose text contains needle."""
+    for iid in hud._feed_items:
+        if needle in hud.canvas.itemcget(iid, "text"):
+            return hud.canvas.itemcget(iid, "fill")
+    return None
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNotificationsRendering(_HudTestBase):
+    def _item(self, urgency="high", repo="o/app", num="#34", title="Fix the thing",
+              url="https://github.com/o/app/pull/34", ts=0.0, glyph="⇄",
+              reason="review"):
+        from feedkit.model import NotifItem
+        return NotifItem(glyph, repo, num, reason, urgency, ts, title, url)
+
+    def test_two_line_item_and_badge(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "Notifications", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [self._item(repo="o/app", title="Fix the thing")], None, None, 7)
+            hud._draw_feeds()
+            root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("\U0001f514 7"))      # 🔔 7 header badge
+            self.assertTrue(hud._feed_has_text("app"))               # line 1 repo
+            self.assertTrue(hud._feed_has_text("Fix the thing"))     # line 2 title
+        finally:
+            hud.close(); root.destroy()
+
+    def test_item_is_clickable_to_thread(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [self._item(url="https://github.com/o/app/pull/34")], None, None, 1)
+            hud._draw_feeds()
+            root.update_idletasks()
+            self.assertTrue(any(u == "https://github.com/o/app/pull/34"
+                                for (_, _, u) in hud._hit))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_overflow_more_line(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            items = [self._item(num="#%d" % i, url="https://github.com/o/app/issues/%d" % i)
+                     for i in range(5)]
+            hud.feed_state[0] = manager.FeedResult("ok", items, None, None, 50)
+            hud._draw_feeds()
+            root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("45 more"))   # 50 total - 5 shown
+            self.assertTrue(any(u == "https://github.com/notifications"
+                                for (_, _, u) in hud._hit))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_no_token_state_line(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult("error", [], None, "no github_token", None)
+            hud._draw_feeds()
+            root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("set GitHub token"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_inbox_zero(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [], None, None, 0)
+            hud._draw_feeds()
+            root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("inbox zero"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_badge_none_and_zero_do_not_crash(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            for badge in (None, 0):
+                hud.feed_state[0] = manager.FeedResult("ok", [], None, None, badge)
+                hud._draw_feeds()       # None >= 50 would raise TypeError without the guard
+                root.update_idletasks()
+                self.assertTrue(hud._feed_has_text("\U0001f514 0"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_high_urgency_amber_when_ok_and_dim_when_stale(self):
+        import hud as hudmod
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        try:
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [self._item(urgency="high", repo="o/app")], None, None, 1)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "app"), hudmod.STATE_HEX["pending"])  # amber
+            hud.feed_state[0] = manager.FeedResult(
+                "stale", [self._item(urgency="high", repo="o/app")], None, "offline", 1)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "app"), hudmod.FEED_DIM)              # dimmed
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
