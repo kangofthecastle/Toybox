@@ -69,5 +69,49 @@ class TestParseRss(unittest.TestCase):
             parse.parse_rss(b"<rss><channel", 3)
 
 
+class TestParseJson(unittest.TestCase):
+    DOC = b'{"data": {"items": [{"title": "A", "html_url": "https://x/a"}, ' \
+          b'{"title": "B", "html_url": "https://x/b"}, {"title": "C"}]}}'
+
+    def test_walks_path_and_maps_fields(self):
+        items = parse.parse_json(self.DOC, "data.items",
+                                 {"text": "title", "url": "html_url"}, 2)
+        self.assertEqual([i.text for i in items], ["A", "B"])
+        self.assertEqual(items[0].url, "https://x/a")
+
+    def test_missing_url_field_is_none(self):
+        items = parse.parse_json(self.DOC, "data.items",
+                                 {"text": "title", "url": "html_url"}, 3)
+        self.assertIsNone(items[2].url)        # third item has no html_url
+
+    def test_path_to_nonlist_returns_empty(self):
+        self.assertEqual(parse.parse_json(self.DOC, "data", {"text": "x"}, 3), [])
+
+    def test_numeric_path_segment_indexes_list(self):
+        doc = b'{"rows": [{"v": "first"}, {"v": "second"}]}'
+        items = parse.parse_json(doc, "rows.1", {"text": "v"}, 3)
+        self.assertEqual(items, [])            # rows.1 is a dict, not a list -> empty
+
+
+class TestParseText(unittest.TestCase):
+    def test_regex_first_group(self):
+        items = parse.parse_text(b"status: OK\nfoo", "text/plain", r"status:\s*(\w+)", 1, url="https://s")
+        self.assertEqual(items[0].text, "OK")
+        self.assertEqual(items[0].url, "https://s")
+
+    def test_no_regex_returns_first_lines(self):
+        items = parse.parse_text(b"one\n\n two \nthree\nfour", "text/plain", None, 2)
+        self.assertEqual([i.text for i in items], ["one", "two"])
+
+    def test_regex_no_match(self):
+        items = parse.parse_text(b"nothing here", None, r"(\d+)", 1)
+        self.assertEqual(items[0].text, "(no match)")
+
+    def test_decode_respects_charset(self):
+        body = "café".encode("latin-1")
+        items = parse.parse_text(body, "text/plain; charset=latin-1", None, 1)
+        self.assertEqual(items[0].text, "café")
+
+
 if __name__ == "__main__":
     unittest.main()
