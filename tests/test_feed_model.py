@@ -72,5 +72,91 @@ class TestIsWebUrl(unittest.TestCase):
             self.assertFalse(model.is_web_url(bad), bad)
 
 
+class TestNormalizeFeed(unittest.TestCase):
+    def test_rss_minimal_fills_defaults(self):
+        f = model.normalize_feed({"type": "rss", "url": "https://news.ycombinator.com/rss"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["type"], "rss")
+        self.assertEqual(f["items"], 3)
+        self.assertEqual(f["interval"], 300)            # floor for non-github
+        self.assertEqual(f["title"], "news.ycombinator.com")  # derived from host
+
+    def test_items_clamped_and_interval_floored(self):
+        f = model.normalize_feed({"type": "rss", "url": "https://x/y", "items": 99, "interval": 5})
+        self.assertEqual(f["items"], 10)                # clamped 1..10
+        self.assertEqual(f["interval"], 300)            # floored
+
+    def test_unknown_type_invalid_but_titled(self):
+        f = model.normalize_feed({"type": "weather", "title": "Sky"})
+        self.assertFalse(f["valid"])
+        self.assertIn("unknown type", f["error"])
+        self.assertEqual(f["title"], "Sky")
+
+    def test_rss_missing_url_invalid(self):
+        f = model.normalize_feed({"type": "rss"})
+        self.assertFalse(f["valid"])
+        self.assertIn("url", f["error"])
+
+    def test_rss_non_http_scheme_invalid(self):
+        f = model.normalize_feed({"type": "rss", "url": "file:///etc/passwd"})
+        self.assertFalse(f["valid"])
+
+    def test_json_requires_path_and_fields_text(self):
+        self.assertFalse(model.normalize_feed(
+            {"type": "json", "url": "https://x", "fields": {"text": "t"}})["valid"])  # no path
+        self.assertFalse(model.normalize_feed(
+            {"type": "json", "url": "https://x", "path": "a", "fields": {"url": "u"}})["valid"])  # no text
+        ok = model.normalize_feed(
+            {"type": "json", "url": "https://x", "path": "a.b", "fields": {"text": "t", "url": "u"}})
+        self.assertTrue(ok["valid"])
+        self.assertEqual(ok["path"], "a.b")
+        self.assertEqual(ok["fields"], {"text": "t", "url": "u"})
+
+    def test_text_regex_optional(self):
+        f = model.normalize_feed({"type": "text", "url": "https://x"})
+        self.assertTrue(f["valid"])
+        self.assertIsNone(f["regex"])
+        g = model.normalize_feed({"type": "text", "url": "https://x", "regex": "(\\d+)"})
+        self.assertEqual(g["regex"], "(\\d+)")
+
+    def test_github_minimal(self):
+        f = model.normalize_feed({"type": "github", "repo": "kangofthecastle/Toybox"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["branch"], "main")
+        self.assertEqual(f["show"], ["ci", "notifications"])
+        self.assertEqual(f["interval"], 120)            # github floor
+        self.assertEqual(f["title"], "Toybox")
+
+    def test_github_bad_repo_invalid(self):
+        self.assertFalse(model.normalize_feed({"type": "github", "repo": "no-slash"})["valid"])
+
+    def test_github_show_filtered(self):
+        f = model.normalize_feed({"type": "github", "repo": "o/r", "show": ["ci", "bogus"]})
+        self.assertEqual(f["show"], ["ci"])
+
+    def test_non_dict_input(self):
+        self.assertFalse(model.normalize_feed("nope")["valid"])
+
+
+class TestDueFeeds(unittest.TestCase):
+    def _valid(self, interval):
+        return {"valid": True, "interval": interval}
+
+    def test_first_pass_staggered(self):
+        feeds = [self._valid(300), self._valid(300), self._valid(300)]
+        # at now=1s only feed 0 (stagger 0) is due; feed 1 wants >=2s, feed 2 >=4s.
+        self.assertEqual(model.due_feeds(feeds, {}, 1.0, stagger=2.0), [0])
+        self.assertEqual(model.due_feeds(feeds, {}, 5.0, stagger=2.0), [0, 1, 2])
+
+    def test_interval_gating(self):
+        feeds = [self._valid(300)]
+        self.assertEqual(model.due_feeds(feeds, {0: 100.0}, 350.0), [])   # 250s < 300
+        self.assertEqual(model.due_feeds(feeds, {0: 100.0}, 400.0), [0])  # 300s >= 300
+
+    def test_invalid_feeds_skipped(self):
+        feeds = [{"valid": False, "error": "x"}, self._valid(300)]
+        self.assertEqual(model.due_feeds(feeds, {}, 10.0), [1])
+
+
 if __name__ == "__main__":
     unittest.main()
