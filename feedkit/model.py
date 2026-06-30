@@ -10,7 +10,9 @@ Item = namedtuple("Item", ["text", "url"])            # url may be None
 Status = namedtuple("Status", ["text", "state", "url"])  # state: success/failure/pending/none
 
 NotifItem = namedtuple("NotifItem",
-    ["glyph", "repo", "number", "reason_label", "urgency", "updated_at", "title", "url"])
+    ["glyph", "repo", "number", "reason_label", "urgency", "updated_at", "title",
+     "url", "thread_url"],
+    defaults=("",))
 # urgency is the tier string "high"/"normal"/"low" -- the HUD maps it to a palette
 # color. number is a display token ("#34" or ""). updated_at is a float unix
 # timestamp (0.0 when the API value was missing/unparseable).
@@ -70,6 +72,12 @@ def github_notifications_url():
     # per_page=50 so the unread count can actually reach the "50+" render threshold
     # (the API default page size is 30).
     return "%s/notifications?per_page=50" % GITHUB_API
+
+
+def github_mark_all_read_url():
+    # PUT here marks every notification thread read (no query string, unlike the
+    # GET notifications URL). Used only by the authenticated API client.
+    return "%s/notifications" % GITHUB_API
 
 
 def github_headers(token):

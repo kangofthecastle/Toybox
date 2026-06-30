@@ -48,6 +48,10 @@ class TestGithubBuilders(unittest.TestCase):
         self.assertEqual(model.github_notifications_url(),
                          "https://api.github.com/notifications?per_page=50")
 
+    def test_github_mark_all_read_url(self):
+        self.assertEqual(model.github_mark_all_read_url(),
+                         "https://api.github.com/notifications")
+
     def test_headers_without_token_have_no_authorization(self):
         h = model.github_headers("")
         self.assertEqual(h["User-Agent"], "Toybox-WebFeed/1.0")
@@ -153,7 +157,20 @@ class TestNotifClassifiers(unittest.TestCase):
         self.assertEqual(it.updated_at, 1.0)
         self.assertEqual(it._fields,
             ("glyph", "repo", "number", "reason_label", "urgency",
-             "updated_at", "title", "url"))
+             "updated_at", "title", "url", "thread_url"))
+
+    def test_notifitem_thread_url_defaults_empty(self):
+        it = model.NotifItem("g", "o/r", "#1", "review", "high", 1.0, "t",
+                             "https://github.com/o/r")
+        self.assertEqual(it.thread_url, "")
+        self.assertEqual(it._fields[-1], "thread_url")
+
+    def test_notifitem_thread_url_set(self):
+        it = model.NotifItem("g", "o/r", "#1", "review", "high", 1.0, "t",
+                             "https://github.com/o/r",
+                             "https://api.github.com/notifications/threads/9")
+        self.assertEqual(it.thread_url,
+                         "https://api.github.com/notifications/threads/9")
 
 
 class TestIsWebUrl(unittest.TestCase):
