@@ -10,7 +10,7 @@ from tkinter import ttk
 import config
 import feedkit.model as model
 
-_TYPES = ("rss", "json", "text", "github")
+_TYPES = ("rss", "json", "text", "github", "notifications")
 
 
 class FeedSettingsWindow:
@@ -83,6 +83,7 @@ class FeedSettingsWindow:
                      ("items", "Items"), ("interval", "Interval s")],
             "github": [("title", "Title"), ("repo", "owner/name"), ("branch", "Branch"),
                        ("interval", "Interval s")],
+            "notifications": [("title", "Title"), ("items", "Items"), ("interval", "Interval s")],
         }[ftype]
         for key, label in spec:
             row = tk.Frame(self._fields_frame); row.pack(anchor="w", pady=1)
@@ -114,6 +115,9 @@ class FeedSettingsWindow:
             if self._show_notif.get():
                 show.append("notifications")
             raw["show"] = show
+        elif ftype == "notifications":
+            if g("items"):
+                raw["items"] = _as_int(g("items"))
         else:
             raw["url"] = g("url")
             if g("items"):
@@ -188,7 +192,7 @@ class FeedSettingsWindow:
         env_set = bool(os.environ.get("TOYBOX_GITHUB_TOKEN"))
         src = "environment (TOYBOX_GITHUB_TOKEN)" if env_set else "this field / config.json"
         tk.Label(f, text="Active token source: " + src, fg="#555").pack(anchor="w", padx=10, pady=(10, 2))
-        tk.Label(f, text="Classic PAT · scope: notifications (+ repo for private CI)",
+        tk.Label(f, text="Classic PAT · scope: notifications (+ repo for private repos)",
                  fg="#555").pack(anchor="w", padx=10)
         row = tk.Frame(f); row.pack(anchor="w", padx=10, pady=6)
         self._token_var = tk.StringVar(value=self.hud.cfg["hud"].get("github_token", ""))
