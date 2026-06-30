@@ -2,7 +2,7 @@
 
 
 def format_ago(elapsed_seconds):
-    """Seconds elapsed -> 'just now' / 'Nm' / 'Nh' / 'Nd'. Negative -> 'just now'."""
+    """Seconds elapsed -> 'just now' / 'Nm' / 'Nh' / 'Nd' / 'Nw'. Negative -> 'just now'."""
     s = elapsed_seconds
     if s < 60:
         return "just now"
@@ -10,4 +10,6 @@ def format_ago(elapsed_seconds):
         return "%dm" % int(s // 60)
     if s < 86400:
         return "%dh" % int(s // 3600)
-    return "%dd" % int(s // 86400)
+    if s < 604800:
+        return "%dd" % int(s // 86400)
+    return "%dw" % int(s // 604800)
