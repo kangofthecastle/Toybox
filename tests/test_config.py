@@ -200,6 +200,53 @@ class TestConfig(unittest.TestCase):
         self._write({"hud": {"github_token": 123}})
         self.assertEqual(config.load(self.path)["hud"]["github_token"], "")
 
+    # --- scoped update (read-modify-write; a writer touches only its own keys) ---
+
+    def test_update_preserves_keys_the_writer_does_not_own(self):
+        # full config on disk: feeds + token + a clipboard setting
+        cfg = config.defaults()
+        cfg["feeds"] = [{"type": "rss", "url": "https://x/y", "title": "X"}]
+        cfg["hud"]["github_token"] = "ghp_secret"
+        cfg["clipboard"]["max_items"] = 7
+        config.save(self.path, cfg)
+        # a HUD-style positional save touches ONLY hud x/y/alpha/locked
+        config.update(self.path, {"hud": {"x": 99, "y": 88, "alpha": 0.5, "locked": True}})
+        loaded = config.load(self.path)
+        self.assertEqual(loaded["hud"]["x"], 99)                       # partial applied
+        self.assertEqual(loaded["hud"]["github_token"], "ghp_secret")  # NOT clobbered
+        self.assertEqual(loaded["feeds"],
+                         [{"type": "rss", "url": "https://x/y", "title": "X"}])  # NOT clobbered
+        self.assertEqual(loaded["clipboard"]["max_items"], 7)          # NOT clobbered
+
+    def test_update_merges_into_nested_section_keeping_siblings(self):
+        cfg = config.defaults()
+        cfg["hud"]["github_token"] = "tok"
+        cfg["hud"]["alpha"] = 0.9
+        config.save(self.path, cfg)
+        config.update(self.path, {"hud": {"x": 5}})
+        loaded = config.load(self.path)
+        self.assertEqual(loaded["hud"]["x"], 5)
+        self.assertEqual(loaded["hud"]["github_token"], "tok")  # sibling preserved
+        self.assertEqual(loaded["hud"]["alpha"], 0.9)
+
+    def test_update_missing_file_uses_defaults_plus_partial(self):
+        config.update(self.path, {"feeds": [{"type": "notifications"}]})
+        loaded = config.load(self.path)
+        self.assertEqual(loaded["feeds"], [{"type": "notifications"}])
+        self.assertEqual(loaded["hud"]["alpha"], config.DEFAULTS["hud"]["alpha"])  # defaults filled
+
+    def test_update_feeds_only_does_not_touch_hud_position(self):
+        cfg = config.defaults()
+        cfg["hud"]["x"] = 1234
+        config.save(self.path, cfg)
+        config.update(self.path, {"feeds": [{"type": "notifications"}]})
+        self.assertEqual(config.load(self.path)["hud"]["x"], 1234)  # position preserved
+
+    def test_update_returns_merged_config(self):
+        config.save(self.path, config.defaults())
+        merged = config.update(self.path, {"hud": {"x": 42}})
+        self.assertEqual(merged["hud"]["x"], 42)
+
 
 if __name__ == "__main__":
     unittest.main()

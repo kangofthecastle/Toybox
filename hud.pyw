@@ -227,8 +227,14 @@ class Hud:
         self._save()
 
     def _save(self):
+        # Persist ONLY the HUD's own window keys via a scoped read-modify-write,
+        # so a drag / opacity / lock save can never clobber feeds, github_token,
+        # or another toy's section (config.update merges over the latest on-disk
+        # state instead of overwriting the whole file with our in-memory copy).
+        h = self.cfg["hud"]
         try:
-            config.save(CFG_PATH, self.cfg)
+            config.update(CFG_PATH, {"hud": {"x": h["x"], "y": h["y"],
+                                             "alpha": h["alpha"], "locked": h["locked"]}})
         except Exception:
             pass  # a transient write failure must never crash the HUD
 

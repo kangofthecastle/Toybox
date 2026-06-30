@@ -438,5 +438,42 @@ class TestHudNotificationsDismiss(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudScopedSave(_HudTestBase):
+    def test_save_does_not_clobber_feeds_or_token(self):
+        """A HUD window-position save must NOT wipe feeds / github_token even
+        when the HUD's in-memory config is stale-empty -- the live-config
+        clobber bug: the old whole-file save rewrote every key, so a drag
+        overwrote disk feeds/token with the empty values loaded at startup."""
+        import tempfile
+        import config
+        import hud as hudmod
+        # disk already holds feeds + a token (written by the settings window or a
+        # hand edit) that THIS HUD never loaded into its in-memory cfg
+        path = os.path.join(tempfile.mkdtemp(), "config.json")
+        seed = config.defaults()
+        seed["feeds"] = [{"type": "rss", "url": "https://x/y", "title": "X"}]
+        seed["hud"]["github_token"] = "ghp_keepme"
+        config.save(path, seed)
+        root, hud = self._make_hud([])               # in-memory feeds/token are empty (stale)
+        orig = hudmod.CFG_PATH
+        hudmod.CFG_PATH = path                        # _save writes via the module global
+        try:
+            self.assertEqual(hud.cfg["feeds"], [])               # precondition: stale memory
+            self.assertEqual(hud.cfg["hud"]["github_token"], "")
+            hud.cfg["hud"]["x"] = 777                             # a drag moved the window
+            hud.cfg["hud"]["y"] = 555
+            hud._save()
+            saved = config.load(path)
+            self.assertEqual(saved["hud"]["x"], 777)             # our own key persisted
+            self.assertEqual(saved["hud"]["y"], 555)
+            self.assertEqual(saved["feeds"],                     # NOT clobbered
+                             [{"type": "rss", "url": "https://x/y", "title": "X"}])
+            self.assertEqual(saved["hud"]["github_token"], "ghp_keepme")  # NOT clobbered
+        finally:
+            hudmod.CFG_PATH = orig
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

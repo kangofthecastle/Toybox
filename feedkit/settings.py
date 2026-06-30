@@ -152,8 +152,14 @@ class FeedSettingsWindow:
             self._refresh_list()
 
     def _persist(self):
+        # The settings window owns feeds + the github token; persist exactly
+        # those via a scoped update so saving them can't clobber the HUD's
+        # window position or another toy's section of the shared config.
         try:
-            config.save(self.hud.CFG_PATH, self.hud.cfg)
+            config.update(self.hud.CFG_PATH, {
+                "feeds": self.hud.cfg.get("feeds", []),
+                "hud": {"github_token": self.hud.cfg["hud"].get("github_token", "")},
+            })
         except Exception:
             pass
         self.hud.manager.set_token(self.hud._github_token())
