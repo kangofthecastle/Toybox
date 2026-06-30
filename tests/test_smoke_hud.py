@@ -366,6 +366,63 @@ class TestHudNotificationsDismiss(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def _click(self, hud, kind):
+        """Synthesize a plain click at the center of the first action zone of `kind`."""
+        for (y0, y1, x0, x1, a) in hud._action_hits:
+            if a[0] == kind:
+                ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+                hud._moved = False
+                hud._on_release(ev)
+                return a
+        return None
+
+    def test_dismiss_one_optimistic_and_enqueues(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        hud.manager.stop()                         # deterministic _actions inspection
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._ditem()], None, None, 3)
+            hud._draw_feeds(); root.update_idletasks()
+            self._click(hud, "one")
+            self.assertEqual(len(hud.feed_state[0].items), 0)   # optimistically removed
+            self.assertEqual(hud.feed_state[0].badge, 2)        # 3 - 1
+            self.assertEqual(hud.manager._actions.get_nowait(),
+                             ("one", 0, "https://api.github.com/notifications/threads/7"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_mark_all_confirm_yes_clears_and_enqueues(self):
+        import feedkit.manager as manager
+        import tkinter.messagebox as tkmsg
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        hud.manager.stop()
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._ditem()], None, None, 8)
+            hud._draw_feeds(); root.update_idletasks()
+            with mock.patch.object(tkmsg, "askyesno", lambda *a, **k: True):
+                self._click(hud, "all")
+            self.assertEqual(len(hud.feed_state[0].items), 0)
+            self.assertEqual(hud.feed_state[0].badge, 0)
+            self.assertEqual(hud.manager._actions.get_nowait(), ("all", 0, None))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_mark_all_confirm_no_does_nothing(self):
+        import feedkit.manager as manager
+        import tkinter.messagebox as tkmsg
+        root, hud = self._make_hud([{"type": "notifications", "title": "N", "items": 5}])
+        hud.manager.stop()
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [self._ditem()], None, None, 8)
+            hud._draw_feeds(); root.update_idletasks()
+            with mock.patch.object(tkmsg, "askyesno", lambda *a, **k: False):
+                self._click(hud, "all")
+            self.assertEqual(len(hud.feed_state[0].items), 1)   # unchanged
+            self.assertEqual(hud.feed_state[0].badge, 8)
+            self.assertTrue(hud.manager._actions.empty())       # nothing enqueued
+        finally:
+            hud.close(); root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

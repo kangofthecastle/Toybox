@@ -12,6 +12,7 @@ import time
 
 import tkinter as tk
 import tkinter.font as tkfont
+import tkinter.messagebox as tkmsg
 import winkit.window as window
 import winkit.metrics as metrics
 import config
@@ -170,6 +171,10 @@ class Hud:
 
     def _on_release(self, event):
         if not self._moved:
+            action = self._action_at(event.x, event.y)   # dismiss/mark-all zone wins over open
+            if action is not None:
+                self._do_dismiss(action)
+                return
             url = self._open_at(event.x, event.y)
             if url:
                 try:
@@ -181,6 +186,29 @@ class Hud:
         self.cfg["hud"]["x"] = self.root.winfo_x()
         self.cfg["hud"]["y"] = self.root.winfo_y()
         self._save()
+
+    def _do_dismiss(self, action):
+        """Optimistically apply a mark-read action to the rendered tile, then hand
+        it to the worker. The worker's reconcile (success) or restore (failure)
+        result overwrites this optimistic state on the next 250ms drain."""
+        kind, idx = action[0], action[1]
+        result = self.feed_state.get(idx)
+        if kind == "one":
+            thread_url = action[2]
+            if result is not None:
+                remaining = [it for it in result.items if it.thread_url != thread_url]
+                self.feed_state[idx] = result._replace(
+                    items=remaining, badge=max(0, (result.badge or 0) - 1))
+                self._draw_feeds()
+            self.manager.mark_read(idx, thread_url)
+        elif kind == "all":
+            if not tkmsg.askyesno("Mark all read?",
+                                  "Mark all notifications as read?", parent=self.root):
+                return
+            if result is not None:
+                self.feed_state[idx] = result._replace(items=[], badge=0)
+                self._draw_feeds()
+            self.manager.mark_all_read(idx)
 
     # --- menu -------------------------------------------------------------
     def _on_menu(self, event):
