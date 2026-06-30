@@ -195,6 +195,7 @@ def parse_notification_items(body, max_items):
             updated_at=_parse_ts(n.get("updated_at")),
             title=_clean(subj.get("title") or ""),
             url=model.notification_url(stype, subj.get("url"), repo),
+            thread_url=n.get("url") or "",
         ))
     return out, total
 

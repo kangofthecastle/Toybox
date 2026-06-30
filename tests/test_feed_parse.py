@@ -276,6 +276,17 @@ class TestParseNotificationItems(unittest.TestCase):
         self.assertEqual(total, 1)
         self.assertEqual(len(items), 1)
 
+    def test_thread_url_carried_from_top_level_url(self):
+        n = _notif(url="https://api.github.com/notifications/threads/42")
+        items, _ = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(items[0].thread_url,
+                         "https://api.github.com/notifications/threads/42")
+
+    def test_thread_url_missing_is_empty(self):
+        items, _ = parse.parse_notification_items(
+            json.dumps([{"unread": True, "reason": "subscribed"}]).encode(), 5)
+        self.assertEqual(items[0].thread_url, "")
+
 
 if __name__ == "__main__":
     unittest.main()
