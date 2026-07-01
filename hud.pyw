@@ -298,6 +298,8 @@ class Hud:
             w.bind("<Button-3>", self._on_menu)
             w.bind("<Motion>", self._on_motion)
             w.bind("<Leave>", self._on_leave)
+            w.bind("<Enter>", self._on_dock_enter, add="+")
+            w.bind("<Leave>", self._on_dock_leave, add="+")
 
         self.menu = tk.Menu(root, tearoff=0)
         for preset in ALPHA_PRESETS:
@@ -1182,6 +1184,16 @@ class Hud:
                 pass
         if getattr(self, "settings", None) is not None:
             self.settings.close()
+
+    def _on_dock_enter(self, event):
+        """Pointer entered the window: if docked, slide fully into view."""
+        if self._dock_edge:
+            self._dock_animate(revealed=True)
+
+    def _on_dock_leave(self, event):
+        """Pointer left the window: if docked, slide back out to the peeking lip."""
+        if self._dock_edge:
+            self._dock_animate(revealed=False)
 
     def _maybe_dock(self):
         """On drag-release, snap to a screen edge if within DOCK_THRESHOLD (and

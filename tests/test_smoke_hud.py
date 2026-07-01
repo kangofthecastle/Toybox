@@ -1960,5 +1960,59 @@ class TestHudEdgePeekDock(_HudTestBase):
             root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudEdgePeekReveal(_HudTestBase):
+    def _drive(self, hud, n=8):
+        for _ in range(n):
+            hud._dock_step()
+
+    def test_enter_reveals_and_leave_hides_when_docked(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            root.geometry("%dx%d+0+150" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            hud._dock_edge = "left"
+            # start hidden (slid off the left edge)
+            hud._dock_animate(revealed=False); self._drive(hud); root.update_idletasks()
+            self.assertLess(root.winfo_x(), 0)
+            # hover the lip -> reveal fully on-screen
+            hud._on_dock_enter(type("E", (), {"x": 1, "y": 1})())
+            self._drive(hud); root.update_idletasks()
+            self.assertEqual(root.winfo_x(), 0)
+            # pointer leaves -> hide back to the lip
+            hud._on_dock_leave(type("E", (), {"x": -1, "y": -1})())
+            self._drive(hud); root.update_idletasks()
+            self.assertLess(root.winfo_x(), 0)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_enter_and_leave_are_noops_when_not_docked(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            root.geometry("%dx%d+400+400" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            self.assertIsNone(hud._dock_edge)
+            hud._on_dock_enter(type("E", (), {"x": 1, "y": 1})())   # must not raise
+            hud._on_dock_leave(type("E", (), {"x": 1, "y": 1})())   # must not raise
+            self.assertIsNone(hud._dock_target)                     # no animation started
+        finally:
+            hud.close(); root.destroy()
+
+    def test_enter_leave_bound_on_canvas_not_root(self):
+        # regression guard: dock hover bindings live on the canvas (like the other
+        # mouse bindings), never on root, so they can't double-fire.
+        root, hud = self._make_hud([])
+        try:
+            for seq in ("<Enter>", "<Leave>"):
+                self.assertEqual(hud.root.bind(seq), "", "%s must not be bound on root" % seq)
+                self.assertNotEqual(hud.canvas.bind(seq), "", "%s must be bound on canvas" % seq)
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
