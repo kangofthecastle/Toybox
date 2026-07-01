@@ -804,8 +804,9 @@ class TestHudStocks(_HudTestBase):
             hud._draw_feeds(); root.update_idletasks()
             self.assertTrue(any(hud.canvas.type(i) == "polygon" for i in hud._feed_items),
                             "no filled chart polygon")
-            self.assertTrue(any(hud.canvas.type(i) == "line" for i in hud._feed_items),
-                            "line still drawn on top")
+            self.assertTrue(any(hud.canvas.type(i) == "line" and len(hud.canvas.coords(i)) > 4
+                                for i in hud._feed_items),
+                            "chart polyline (a line with >2 points) still drawn on top")
         finally:
             hud.close(); root.destroy()
 
@@ -990,7 +991,10 @@ class TestHudAccents(_HudTestBase):
             hud.active_tab = "markets"
             hud.feed_state[0] = manager.FeedResult("ok", [Quote("SPY", 1.0, 0.5, [1.0, 2.0])], None, None)
             hud._draw_feeds(); root.update_idletasks()
-            self.assertTrue(self._accent_rects(hud), "no accent underline for active range")
+            import hud as hudmod
+            right = [i for i in self._accent_rects(hud)
+                     if (hud.canvas.coords(i)[0] + hud.canvas.coords(i)[2]) / 2 > hudmod.WIDTH // 2]
+            self.assertTrue(right, "no accent underline for the right-aligned active range segment")
         finally:
             hud.close(); root.destroy()
 

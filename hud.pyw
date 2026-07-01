@@ -546,8 +546,9 @@ class Hud:
     def _hover_zone_at(self, x, y):
         """Rectangle (x0,y0,x1,y1) to highlight for the clickable thing under the
         cursor, or None. A tab/range action highlights its own segment (a pill);
-        a clickable feed row highlights the full content width. Refresh/dismiss
-        glyph zones are intentionally not highlighted."""
+        any other clickable feed row highlights the full content width. Refresh
+        glyphs get no highlight (their rows register no _hit); a dismiss glyph
+        shares its row's full-width band rather than getting its own pill."""
         for y0, y1, x0, x1, action in self._action_hits:
             if y0 <= y <= y1 and x0 <= x <= x1 and action[0] in ("tab", "range"):
                 return (x0 - 3, y0, x1 + 3, y1)
