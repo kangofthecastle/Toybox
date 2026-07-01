@@ -1,3 +1,4 @@
+import json
 import unittest
 
 import feedkit.fetch as fetch
@@ -359,6 +360,106 @@ class TestManagerControl(unittest.TestCase):
         m.set_feeds([{"type": "rss", "url": "https://b"}])
         self.assertEqual(m._last, {})
         self.assertEqual(m.feeds[0]["url"], "https://b")
+
+
+class TestStockRangeAndRefresh(unittest.TestCase):
+    def _chart(self, price=100.0, prev=99.0, closes=(98.0, 100.0)):
+        return json.dumps({"chart": {"result": [{
+            "meta": {"regularMarketPrice": price, "chartPreviousClose": prev},
+            "indicators": {"quote": [{"close": list(closes)}]}}], "error": None}}).encode()
+
+    def test_set_stock_range_updates_and_refetches(self):
+        urls = []
+        def fake(url, **kw):
+            urls.append(url); return _ok(self._chart())
+        feed = {"type": "stocks", "symbols": ["SPY"], "range": "1mo", "tab": "markets"}
+        m = manager.FeedManager([feed], fetch_fn=fake)
+        m._run_once(0.0); m.drain()
+        self.assertIn("range=1mo", urls[0])
+        m.set_stock_range(0, "1d")
+        self.assertEqual(m.feeds[0]["range"], "1d")
+        self.assertNotIn(0, m._last)                          # last-fetch dropped -> due next tick
+        self.assertFalse(any(isinstance(k, tuple) and len(k) == 3 and k[0] == 0 and k[1] == "stk"
+                             for k in m._cache))              # stk cache cleared
+        m._run_once(5.0)
+        self.assertTrue(any("range=1d" in u for u in urls[1:]))   # refetched with new range
+
+    def test_set_stock_range_ignores_unknown_code_and_nonstocks(self):
+        feed = {"type": "stocks", "symbols": ["SPY"], "range": "1mo", "tab": "markets"}
+        rss = {"type": "rss", "url": "https://x"}
+        m = manager.FeedManager([feed, rss], fetch_fn=lambda u, **k: _ok(self._chart()))
+        m.set_stock_range(0, "zzz")
+        self.assertEqual(m.feeds[0]["range"], "1mo")          # unknown code -> unchanged
+        m.set_stock_range(1, "1d")
+        self.assertNotIn("range", m.feeds[1])                 # non-stocks idx -> unchanged
+        m.set_stock_range(99, "1d")                           # out of range -> no crash
+
+    def test_refresh_drops_last_for_given_indices_only(self):
+        a = {"type": "rss", "url": "https://a"}
+        b = {"type": "rss", "url": "https://b"}
+        m = manager.FeedManager([a, b], fetch_fn=lambda u, **k: _ok(RSS))
+        m._run_once(4.0); m.drain()
+        self.assertIn(0, m._last); self.assertIn(1, m._last)
+        m.refresh([0])
+        self.assertNotIn(0, m._last)
+        self.assertIn(1, m._last)
+
+
+class TestProcessStocks(unittest.TestCase):
+    def _chart(self, price, prev, closes):
+        return json.dumps({"chart": {"result": [{
+            "meta": {"regularMarketPrice": price, "chartPreviousClose": prev},
+            "indicators": {"quote": [{"close": list(closes)}]}}], "error": None}}).encode()
+
+    FEED = {"type": "stocks", "symbols": ["SPY", "META"], "range": "1mo", "tab": "markets"}
+
+    def test_all_ok_two_quotes(self):
+        def fake(url, **kw):
+            if "chart/SPY" in url:
+                return _ok(self._chart(746.77, 756.0, [740.0, 745.0, 746.77]))
+            return _ok(self._chart(563.29, 562.0, [560.0, 561.0, 563.29]))
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "ok")
+        self.assertEqual([q.symbol for q in result.items], ["SPY", "META"])
+        self.assertAlmostEqual(result.items[0].price, 746.77)
+
+    def test_one_symbol_error_after_success_is_stale_retained(self):
+        state = {"n": 0}
+        def fake(url, **kw):
+            if "chart/SPY" in url:
+                return _ok(self._chart(746.77, 756.0, [740.0, 746.77]))
+            state["n"] += 1
+            return _ok(self._chart(563.29, 562.0, [560.0, 563.29])) if state["n"] == 1 else _err("offline")
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0); m.drain()
+        m._last.clear()
+        m._run_once(1000.0)
+        idx, result = m.drain()[-1]
+        self.assertEqual(result.state, "stale")
+        self.assertEqual(result.error, "offline")
+        self.assertEqual(len(result.items), 2)                # META retained from cache
+
+    def test_not_modified_reuses_quote(self):
+        responses = [_ok(self._chart(746.77, 756.0, [740.0, 746.77])), _nm()]
+        m = manager.FeedManager([{"type": "stocks", "symbols": ["SPY"], "range": "1mo"}],
+                                fetch_fn=lambda u, **k: responses.pop(0))
+        m._run_once(0.0); m.drain()
+        m._last.clear()
+        m._run_once(1000.0)
+        idx, result = m.drain()[-1]
+        self.assertEqual(result.state, "ok")
+        self.assertAlmostEqual(result.items[0].price, 746.77)
+
+    def test_all_fail_no_cache_is_error(self):
+        m = manager.FeedManager([{"type": "stocks", "symbols": ["SPY"], "range": "1mo"}],
+                                fetch_fn=lambda u, **k: _err("offline"))
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "error")
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.error, "offline")
 
 
 if __name__ == "__main__":

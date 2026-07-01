@@ -332,6 +332,123 @@ class TestNormalizeFeed(unittest.TestCase):
         self.assertEqual(f["query"], "is:open")
 
 
+class TestNormalizeStocksAndTab(unittest.TestCase):
+    def test_news_feeds_get_tab(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "rss", "url": "https://x/y", "tab": "tech"})["tab"], "tech")
+        self.assertEqual(model.normalize_feed(
+            {"type": "rss", "url": "https://x/y"})["tab"], "global")          # missing -> global
+        self.assertEqual(model.normalize_feed(
+            {"type": "rss", "url": "https://x/y", "tab": "nope"})["tab"], "global")  # unknown -> global
+
+    def test_invalid_news_feed_still_has_tab(self):
+        f = model.normalize_feed({"type": "rss", "tab": "markets"})            # missing url -> invalid
+        self.assertFalse(f["valid"])
+        self.assertEqual(f["tab"], "markets")
+
+    def test_pinned_feeds_have_no_tab(self):
+        self.assertNotIn("tab", model.normalize_feed({"type": "notifications"}))
+        self.assertNotIn("tab", model.normalize_feed({"type": "github", "repo": "o/r"}))
+
+    def test_stocks_minimal_valid(self):
+        f = model.normalize_feed({"type": "stocks", "symbols": ["spy", "META"],
+                                  "range": "1d", "tab": "markets"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["symbols"], ["SPY", "META"])                       # upper-cased
+        self.assertEqual(f["range"], "1d")
+        self.assertEqual(f["tab"], "markets")
+        self.assertEqual(f["interval"], 300)                                  # default
+        self.assertEqual(f["title"], "Markets")                              # default title
+
+    def test_stocks_cleans_and_caps_symbols(self):
+        f = model.normalize_feed({"type": "stocks",
+                                  "symbols": ["a b!", "", 5, "BRK-B", "^GSPC"] + ["X%d" % i for i in range(20)]})
+        self.assertEqual(f["symbols"][:4], ["AB", "BRK-B", "^GSPC", "X0"])    # junk stripped, non-str dropped
+        self.assertLessEqual(len(f["symbols"]), 10)                          # capped at 10
+
+    def test_stocks_no_usable_symbol_invalid(self):
+        f = model.normalize_feed({"type": "stocks", "symbols": ["", "!!", 3]})
+        self.assertFalse(f["valid"])
+        self.assertIn("symbols", f["error"])
+        self.assertEqual(f["title"], "Markets")                              # titled for the error tile
+
+    def test_stocks_bad_range_defaults(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "stocks", "symbols": ["SPY"], "range": "10y"})["range"], "1mo")
+
+    def test_stocks_interval_floor_120(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "stocks", "symbols": ["SPY"], "interval": 5})["interval"], 120)
+
+    def test_stocks_default_tab_global_when_missing(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "stocks", "symbols": ["SPY"]})["tab"], "global")         # like any news feed
+
+
+class TestTabsAndTypes(unittest.TestCase):
+    def test_news_tabs_order_and_labels(self):
+        self.assertEqual([k for k, _ in model.NEWS_TABS],
+                         ["global", "markets", "tech", "sports"])
+        self.assertEqual(dict(model.NEWS_TABS)["markets"], "Markets")
+
+    def test_coerce_tab_valid_and_default_global(self):
+        self.assertEqual(model.coerce_tab("markets"), "markets")
+        self.assertEqual(model.coerce_tab("nope"), "global")
+        self.assertEqual(model.coerce_tab(None), "global")
+
+    def test_coerce_default_tab_valid_and_default_tech(self):
+        self.assertEqual(model.coerce_default_tab("global"), "global")
+        self.assertEqual(model.coerce_default_tab("bogus"), "tech")
+        self.assertEqual(model.coerce_default_tab(None), "tech")
+
+    def test_is_news_type(self):
+        for t in ("rss", "json", "text", "stocks"):
+            self.assertTrue(model.is_news_type(t), t)
+        for t in ("github", "notifications", "search", "?", None):
+            self.assertFalse(model.is_news_type(t), t)
+
+    def test_is_pinned_type(self):
+        for t in ("github", "notifications", "search"):
+            self.assertTrue(model.is_pinned_type(t), t)
+        for t in ("rss", "json", "text", "stocks", "?", None):
+            self.assertFalse(model.is_pinned_type(t), t)
+
+
+class TestStockPrimitives(unittest.TestCase):
+    def test_quote_shape(self):
+        q = model.Quote("SPY", 746.77, -1.3, [1.0, 2.0])
+        self.assertEqual(q._fields, ("symbol", "price", "change_pct", "series"))
+        self.assertEqual(q.symbol, "SPY")
+
+    def test_chart_url_maps_range_to_interval(self):
+        self.assertEqual(
+            model.yahoo_chart_url("SPY", "1mo"),
+            "https://query1.finance.yahoo.com/v8/finance/chart/SPY"
+            "?range=1mo&interval=1d&includePrePost=false")
+        self.assertIn("range=1d&interval=5m", model.yahoo_chart_url("SPY", "1d"))
+        self.assertIn("range=5d&interval=30m", model.yahoo_chart_url("SPY", "5d"))
+        self.assertIn("range=3mo&interval=1d", model.yahoo_chart_url("SPY", "3mo"))
+
+    def test_chart_url_unknown_range_falls_back_to_default(self):
+        self.assertIn("range=1mo&interval=1d", model.yahoo_chart_url("SPY", "zzz"))
+
+    def test_chart_url_percent_encodes_symbol(self):
+        self.assertIn("/chart/%5EGSPC?", model.yahoo_chart_url("^GSPC", "1mo"))
+
+    def test_quote_web_url_is_browser_url(self):
+        u = model.yahoo_quote_web_url("SPY")
+        self.assertEqual(u, "https://finance.yahoo.com/quote/SPY")
+        self.assertTrue(model.is_web_url(u))
+
+    def test_format_quote_line_down(self):
+        q = model.Quote("SPY", 746.77, -1.3, [])
+        self.assertEqual(model.format_quote_line(q), "SPY    746.77 ▼1.3%")
+
+    def test_format_quote_line_up_and_zero(self):
+        self.assertTrue(model.format_quote_line(model.Quote("META", 563.29, 0.14, [])).endswith("△0.1%"))
+        self.assertIn("△", model.format_quote_line(model.Quote("X", 1.0, 0.0, [])))  # 0.0 -> up
+
+
 class TestDueFeeds(unittest.TestCase):
     def _valid(self, interval):
         return {"valid": True, "interval": interval}

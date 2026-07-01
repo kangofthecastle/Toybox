@@ -359,5 +359,58 @@ class TestParseSearchItems(unittest.TestCase):
         self.assertEqual(total, 8)
 
 
+def _chart_body(price=746.77, prev=756.0, closes=(740.0, 745.0, 746.77), result=True):
+    if not result:
+        return json.dumps({"chart": {"result": None, "error": {"code": "Not Found"}}}).encode()
+    return json.dumps({"chart": {"result": [{
+        "meta": {"regularMarketPrice": price, "chartPreviousClose": prev},
+        "indicators": {"quote": [{"close": list(closes)}]}}], "error": None}}).encode()
+
+
+class TestParseStockChart(unittest.TestCase):
+    def test_normal(self):
+        q = parse.parse_stock_chart(_chart_body(), "SPY")
+        self.assertEqual(q.symbol, "SPY")
+        self.assertAlmostEqual(q.price, 746.77)
+        self.assertAlmostEqual(q.change_pct, (746.77 - 756.0) / 756.0 * 100.0)
+        self.assertEqual(q.series, [740.0, 745.0, 746.77])
+
+    def test_null_closes_filtered(self):
+        q = parse.parse_stock_chart(_chart_body(closes=(740.0, None, 746.77)), "SPY")
+        self.assertEqual(q.series, [740.0, 746.77])
+
+    def test_result_null_is_none(self):
+        self.assertIsNone(parse.parse_stock_chart(_chart_body(result=False), "SPY"))
+
+    def test_missing_price_uses_last_close(self):
+        body = json.dumps({"chart": {"result": [{
+            "meta": {"chartPreviousClose": 100.0},
+            "indicators": {"quote": [{"close": [98.0, 101.0]}]}}]}}).encode()
+        q = parse.parse_stock_chart(body, "X")
+        self.assertAlmostEqual(q.price, 101.0)                 # fallback to last close
+        self.assertAlmostEqual(q.change_pct, 1.0)             # (101-100)/100*100
+
+    def test_previousclose_fallback_when_chartpreviousclose_absent(self):
+        # previousClose should be used when chartPreviousClose is not present.
+        body = json.dumps({"chart": {"result": [{
+            "meta": {"regularMarketPrice": 101.0, "previousClose": 100.0},
+            "indicators": {"quote": [{"close": [100.0, 101.0]}]}}],
+            "error": None}}).encode()
+        self.assertAlmostEqual(parse.parse_stock_chart(body, "X").change_pct, 1.0)
+
+    def test_missing_prevclose_is_zero_change(self):
+        body = json.dumps({"chart": {"result": [{
+            "meta": {"regularMarketPrice": 50.0},
+            "indicators": {"quote": [{"close": [50.0]}]}}]}}).encode()
+        self.assertEqual(parse.parse_stock_chart(body, "X").change_pct, 0.0)
+
+    def test_zero_prevclose_is_zero_change(self):
+        self.assertEqual(parse.parse_stock_chart(_chart_body(prev=0.0), "X").change_pct, 0.0)
+
+    def test_garbage_never_raises(self):
+        for bad in (b"not json{", b"", b"[]", b'{"chart":{}}', b'{"chart":{"result":[{}]}}'):
+            self.assertIsNone(parse.parse_stock_chart(bad, "X"), bad)
+
+
 if __name__ == "__main__":
     unittest.main()

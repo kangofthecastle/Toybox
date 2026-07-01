@@ -65,6 +65,32 @@ class FeedManager:
         with self._lock:
             self.token = token or ""
 
+    def set_stock_range(self, idx, code):
+        """UI-thread session-state range change for a stocks feed. No-op unless idx
+        is a valid stocks feed and code is a known range. Replaces the feed with a
+        copy carrying the new range and drops its (idx,'stk',*) cache + last-fetch
+        so the worker refetches the new range next tick."""
+        with self._lock:
+            if not (0 <= idx < len(self.feeds)):
+                return
+            feed = self.feeds[idx]
+            if not feed.get("valid") or feed.get("type") != "stocks" or code not in model.STOCK_RANGES:
+                return
+            new = dict(feed)
+            new["range"] = code
+            self.feeds[idx] = new
+            for k in [k for k in self._cache
+                      if isinstance(k, tuple) and len(k) == 3 and k[0] == idx and k[1] == "stk"]:
+                self._cache.pop(k, None)
+            self._last.pop(idx, None)
+
+    def refresh(self, indices):
+        """Force a conditional re-fetch of the given feed indices on the next tick
+        by dropping their last-fetch time (validators kept -> a 304 reuses cache)."""
+        with self._lock:
+            for idx in indices:
+                self._last.pop(idx, None)
+
     def mark_read(self, idx, thread_url):
         """Enqueue 'mark this thread read' for the worker (called from the UI)."""
         self._actions.put(("one", idx, thread_url))
@@ -165,6 +191,8 @@ class FeedManager:
             return self._process_notifications(idx, feed, token)
         if feed["type"] == "search":
             return self._process_search(idx, feed, token)
+        if feed["type"] == "stocks":
+            return self._process_stocks(idx, feed)
         if feed["type"] == "github":
             return self._process_github(idx, feed, token)
         with self._lock:
@@ -195,6 +223,53 @@ class FeedManager:
             return parse.parse_json(res.body, feed["path"], feed["fields"], feed["items"])
         return parse.parse_text(res.body, res.content_type, feed.get("regex"),
                                 feed["items"], url=feed["url"])
+
+    def _process_stocks(self, idx, feed):
+        """Per-symbol Yahoo chart fetch (no token). Conditional GET per symbol under
+        cache key (idx,'stk',symbol) -> {etag, lm, quote}. not_modified reuses the
+        cached Quote (fresh); error keeps the cached Quote if any (stale); a 200 is
+        parsed, keeping the prior Quote on a None parse. Tile freshness is coarse:
+        one flaky symbol dims/annotates the whole tile."""
+        range_ = feed["range"]
+        quotes = []
+        any_error = None
+        refreshed = False
+        for symbol in feed["symbols"]:
+            key = (idx, "stk", symbol)
+            with self._lock:
+                cache = self._cache.get(key, {})
+            res = self._fetch(model.yahoo_chart_url(symbol, range_),
+                              etag=cache.get("etag"), last_modified=cache.get("lm"))
+            if res.status == "not_modified":
+                q = cache.get("quote")
+                if q is not None:
+                    quotes.append(q)
+                    refreshed = True
+                continue
+            if res.status == "error":
+                any_error = res.error
+                q = cache.get("quote")
+                if q is not None:
+                    quotes.append(q)
+                continue
+            q = parse.parse_stock_chart(res.body, symbol)
+            if q is None:
+                any_error = any_error or "bad data"
+                prev = cache.get("quote")
+                if prev is not None:
+                    quotes.append(prev)
+                continue
+            quotes.append(q)
+            refreshed = True
+            with self._lock:
+                self._cache[key] = {"etag": res.etag, "lm": res.last_modified, "quote": q}
+        if refreshed and not any_error:
+            state = "ok"
+        elif quotes:
+            state = "stale"
+        else:
+            state = "error"
+        return FeedResult(state, quotes, None, any_error)
 
     def _process_github(self, idx, feed, token):
         repo, branch, show = feed["repo"], feed["branch"], feed["show"]
