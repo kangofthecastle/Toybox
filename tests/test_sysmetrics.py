@@ -1,6 +1,6 @@
 import unittest
 
-from sysmetrics import cpu_percent
+from sysmetrics import cpu_percent, gpu_percent
 
 # snapshots are (idle, kernel, user) cumulative ticks; kernel includes idle.
 
@@ -36,9 +36,6 @@ class TestCpuPercent(unittest.TestCase):
     def test_result_clamped_to_0(self):
         # pathological idle delta exceeding total -> clamp at 0
         self.assertEqual(cpu_percent((0, 0, 0), (200, 100, 0)), 0.0)
-
-
-from sysmetrics import gpu_percent
 
 
 class TestGpuPercent(unittest.TestCase):

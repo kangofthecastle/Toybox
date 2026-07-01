@@ -657,16 +657,18 @@ class TestHudGpuRow(_HudTestBase):
         try:
             hud.gpu = 42.0
             hud._draw()
-            self.assertTrue(any("GPU" in t and "42" in t for t in self._texts(hud)))
+            self.assertIn("42", hud.canvas.itemcget(hud._gpu_text, "text"))
         finally:
             hud.close(); root.destroy()
 
     def test_gpu_row_degrades_when_none(self):
         root, hud = self._make_hud([])
         try:
+            import hud as hudmod
             hud.gpu = None
             hud._draw()
             self.assertEqual(hud.canvas.itemcget(hud._gpu_text, "text"), "GPU  --%")
+            self.assertEqual(hud.canvas.itemcget(hud._gpu_text, "fill"), hudmod.DIM)
         finally:
             hud.close(); root.destroy()
 
@@ -698,8 +700,7 @@ class TestHudMediaRow(_HudTestBase):
                     ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
                     hud._moved = False
                     hud._on_release(ev)
-            self.assertEqual(sorted(calls), ["next", "playpause", "prev"])
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(calls, ["prev", "playpause", "next"])
         finally:
             hud.close(); root.destroy()
 
