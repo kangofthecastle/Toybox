@@ -24,6 +24,9 @@ import webbrowser
 import timeago
 import feedkit.manager as feedmanager
 import feedkit.model as feedmodel
+import schedkit.xlsx as schedxlsx
+import schedkit.model as schedmodel
+import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
@@ -158,6 +161,17 @@ class Hud:
         self.active_tab = feedmodel.coerce_default_tab(cfg["hud"].get("default_tab"))
         token = self._github_token()
         self.manager = feedmanager.FeedManager(cfg.get("feeds", []), token=token)
+        # Schedule tile state. self.schedule starts empty (tile hidden) and is
+        # replaced under the lock by the mtime-gated poller thread. Guarded by the
+        # smoke check so a smoke launch starts no thread.
+        self.schedule = schedmodel.Schedule([])
+        self._sched_lock = threading.Lock()
+        self._sched_path = self._schedule_path()
+        self._sched_mtime = None
+        self._sched_stop = threading.Event()
+        self._sched_thread = None
+        if not _smoke_ms():
+            self._start_schedule_poller()
         self.width = WIDTH        # session-only; resets narrow each launch
 
         self.canvas = tk.Canvas(
@@ -817,6 +831,84 @@ class Hud:
             text = text[:-1]
         return text + "…"
 
+    def _schedule_path(self):
+        """Absolute .xlsx path from config (hud.schedule.path), or "" when unset
+        or malformed -> the tile stays hidden."""
+        sched = self.cfg["hud"].get("schedule") or {}
+        if not isinstance(sched, dict):
+            return ""
+        path = sched.get("path") or ""
+        return path if isinstance(path, str) else ""
+
+    def _schedule_now(self):
+        """Injectable clock for the schedule tile (tests override this)."""
+        return datetime.datetime.now()
+
+    def _start_schedule_poller(self):
+        """Start the daemon mtime poller (no-op without a configured path)."""
+        if not self._sched_path:
+            return
+        self._sched_thread = threading.Thread(
+            target=self._schedule_loop, name="schedpoller", daemon=True)
+        self._sched_thread.start()
+
+    def _schedule_loop(self):
+        """Every ~30s: re-read the file if its mtime changed. Never touches Tk."""
+        while not self._sched_stop.is_set():
+            try:
+                self._reload_schedule_if_changed()
+            except Exception:
+                pass
+            self._sched_stop.wait(30)
+
+    def _reload_schedule_if_changed(self):
+        """mtime-gated re-read + re-parse. A missing/locked file or a {} read
+        retains the last-good schedule (and retries next poll); only a non-empty
+        workbook replaces self.schedule."""
+        path = self._sched_path
+        if not path:
+            return
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            return
+        if mtime == self._sched_mtime:
+            return
+        workbook = schedxlsx.read_workbook(path)
+        if not workbook:
+            return
+        schedule = schedmodel.parse_schedule(workbook)
+        with self._sched_lock:
+            self.schedule = schedule
+            self._sched_mtime = mtime
+
+    def _draw_schedule_tile(self, y):
+        """Pinned "now" tile above the tab bar. kind 'now' -> "▸ task";
+        'next' -> "→ HH:MM  task"; 'none' -> hidden (y unchanged). Reuses the
+        pixel-fit ellipsis and registers a marquee record for a truncated line.
+        Not clickable (no URL)."""
+        with self._sched_lock:
+            schedule = self.schedule
+        slot = schedule.at(self._schedule_now())
+        if slot.kind == "none":
+            return y
+        if slot.kind == "now":
+            text = "▸ " + slot.task
+        else:
+            text = "→ %s  %s" % (slot.start.strftime("%H:%M"), slot.task)
+        c = self.canvas
+        y += FEED_TITLE_GAP
+        row_y = y + FEED_LINE_H // 2
+        fitted = self._fit_px(text, PAD)
+        tid = c.create_text(PAD, row_y, anchor="w", text=fitted,
+                            fill=ACCENT, font=FEED_TITLE_FONT)
+        self._feed_items.append(tid)
+        if fitted != text:
+            self._scroll_lines.append({"item": tid, "full": text, "x_start": PAD,
+                                       "y0": row_y - FEED_LINE_H // 2,
+                                       "y1": row_y + FEED_LINE_H // 2})
+        return y + FEED_LINE_H + FEED_TITLE_GAP
+
     def _draw_feeds(self):
         c = self.canvas
         for item_id in self._feed_items:
@@ -831,6 +923,7 @@ class Hud:
             self._hover_item = None
         self._hover_rect = None
         y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H    # below the header rows + reserved now-playing band
+        y = self._draw_schedule_tile(y)   # pinned "now" tile, above the tab bar
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
                 if self.manager.feeds[i].get("tab") == self.active_tab]
@@ -1027,6 +1120,12 @@ class Hud:
             self.manager.stop()
         except Exception:
             pass
+        if self._sched_thread is not None:
+            self._sched_stop.set()
+            try:
+                self._sched_thread.join(timeout=2)
+            except Exception:
+                pass
         if getattr(self, "settings", None) is not None:
             self.settings.close()
 

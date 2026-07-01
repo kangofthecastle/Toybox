@@ -1734,5 +1734,81 @@ class TestHudWeather(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudScheduleTile(_HudTestBase):
+    def _sched(self, rows):
+        import schedkit.model as schedmodel
+        return schedmodel.parse_schedule({"S": rows})
+
+    def _text_y(self, hud, needle):
+        for iid in hud._feed_items:
+            try:
+                if needle in hud.canvas.itemcget(iid, "text"):
+                    return hud.canvas.coords(iid)[1]
+            except Exception:
+                pass
+        return None
+
+    def test_now_tile_renders_task(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 9, 30)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Standup"))
+            self.assertTrue(hud._feed_has_text("▸"))     # the now glyph
+        finally:
+            hud.close(); root.destroy()
+
+    def test_next_tile_shows_time_and_arrow(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 8, 0)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("→"))     # arrow for a next slot
+            self.assertTrue(hud._feed_has_text("09:00"))
+            self.assertTrue(hud._feed_has_text("Standup"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_none_hides_tile_but_tabs_present(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 23, 0)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertFalse(hud._feed_has_text("Standup"))
+            self.assertTrue(hud._feed_has_text("Global"))     # tab bar unaffected
+        finally:
+            hud.close(); root.destroy()
+
+    def test_tile_is_above_tab_bar(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 9, 30)
+            hud._draw_feeds(); root.update_idletasks()
+            sched_y = self._text_y(hud, "Standup")
+            tab_y = self._text_y(hud, "Global")
+            self.assertIsNotNone(sched_y)
+            self.assertIsNotNone(tab_y)
+            self.assertLess(sched_y, tab_y)                   # pinned above the tabs
+        finally:
+            hud.close(); root.destroy()
+
+    def test_empty_schedule_draws_no_tile_no_crash(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._draw_feeds(); root.update_idletasks()         # default empty Schedule
+            self.assertTrue(hud._feed_has_text("Global"))
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
