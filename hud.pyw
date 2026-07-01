@@ -612,7 +612,7 @@ class Hud:
         budget = self.width - PAD - rec["x_start"]
         full_w = self._feed_font_measure.measure(rec["full"])
         self._marquee = {"item": rec["item"], "base_x": rec["x_start"],
-                         "max": max(0, full_w - budget), "offset": 0, "dir": 1, "pause": 0}
+                         "max": max(0, full_w - budget), "offset": 0, "pause": 0}
         self._marquee_after = self.root.after(400, self._marquee_step)   # brief pause, then scroll
 
     def _marquee_step(self):
@@ -622,12 +622,14 @@ class Hud:
         try:
             if m["pause"] > 0:
                 m["pause"] -= 1
+            elif m["offset"] >= m["max"]:
+                m["offset"] = 0            # reached the end -> jump back to the start, then loop
+                m["pause"] = 10            # brief pause at the start before scrolling again
             else:
-                m["offset"] += m["dir"] * 2
+                m["offset"] += 2
                 if m["offset"] >= m["max"]:
-                    m["offset"] = m["max"]; m["dir"] = -1; m["pause"] = 12
-                elif m["offset"] <= 0:
-                    m["offset"] = 0; m["dir"] = 1; m["pause"] = 12
+                    m["offset"] = m["max"]
+                    m["pause"] = 10        # brief pause showing the end, then wrap next tick
             y = self.canvas.coords(m["item"])[1]
             self.canvas.coords(m["item"], m["base_x"] - m["offset"], y)
         except tk.TclError:

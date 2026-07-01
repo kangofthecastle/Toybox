@@ -1224,6 +1224,29 @@ class TestHudMarquee(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_marquee_wraps_to_start_not_bounce(self):
+        root, hud = self._make_hud(self._long_feed())
+        try:
+            self._draw_long(hud, root)
+            rec = hud._scroll_lines[0]
+            hud._on_motion(self._evt(60, (rec["y0"] + rec["y1"]) // 2))
+            m = hud._marquee
+            self.assertGreater(m["max"], 0)
+            offsets = []
+            for _ in range(m["max"] // 2 + 60):
+                hud._marquee_step()
+                offsets.append(m["offset"])
+            self.assertIn(m["max"], offsets)                 # scrolled to the end
+            i = offsets.index(m["max"])
+            j = i
+            while j < len(offsets) and offsets[j] == m["max"]:
+                j += 1                                       # skip the brief end pause
+            self.assertLess(j, len(offsets), "expected motion after the end pause")
+            self.assertEqual(offsets[j], 0)                  # wraps to start (a bounce would give max-2)
+        finally:
+            hud._stop_marquee()
+            hud.close(); root.destroy()
+
     def test_drain_without_new_data_does_not_redraw(self):
         root, hud = self._make_hud(self._long_feed())
         try:
