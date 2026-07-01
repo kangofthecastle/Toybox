@@ -139,6 +139,9 @@ class Hud:
         self._hover_item = None    # the highlight rectangle canvas id, or None
         self._hover_rect = None    # the (x0,y0,x1,y1) currently highlighted, or None
         self._drain_after = None  # pending after() id so close() can cancel it
+        self._scroll_lines = []    # [{item, full, x_start, y0, y1}] truncated feed lines
+        self._marquee = None       # active marquee dict, or None
+        self._marquee_after = None # pending after() id
         self.settings = None      # FeedSettingsWindow singleton (Task 11)
         self.active_tab = feedmodel.coerce_default_tab(cfg["hud"].get("default_tab"))
         token = self._github_token()
@@ -397,12 +400,15 @@ class Hud:
 
     def _drain_feeds(self):
         self._drain_after = None
+        changed = False
         for idx, result in self.manager.drain():
             self.feed_state[idx] = result
-        try:
-            self._draw_feeds()
-        except tk.TclError:
-            return                                  # window gone; stop the loop
+            changed = True
+        if changed:
+            try:
+                self._draw_feeds()
+            except tk.TclError:
+                return
         self._drain_after = self.root.after(250, self._drain_feeds)
 
     def _tile_for(self, idx, feed):
@@ -499,9 +505,13 @@ class Hud:
         for row in lines:
             if len(row) == 3:
                 text, url, dim = row
-                lid = c.create_text(PAD + 6, y, anchor="w", text=self._fit_px(text, PAD + 6),
+                fitted = self._fit_px(text, PAD + 6)
+                lid = c.create_text(PAD + 6, y, anchor="w", text=fitted,
                                     fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
                 self._feed_items.append(lid)
+                if fitted != text:
+                    self._scroll_lines.append({"item": lid, "full": text, "x_start": PAD + 6,
+                                               "y0": y - FEED_LINE_H // 2, "y1": y + FEED_LINE_H // 2})
                 self._register_hit(y, url)
                 y += FEED_LINE_H
             else:
@@ -576,13 +586,63 @@ class Hud:
             self._hover_item = self.canvas.create_rectangle(*rect, fill=HOVER_BG, outline="")
             self.canvas.tag_lower(self._hover_item)     # behind text/lines/charts
 
+    def _scroll_line_at(self, x, y):
+        """The scrollable (truncated) line record under (x, y), or None."""
+        for rec in self._scroll_lines:
+            if rec["y0"] <= y <= rec["y1"]:
+                return rec
+        return None
+
+    def _start_marquee(self, rec):
+        if self._marquee is not None and self._marquee["item"] == rec["item"]:
+            return
+        self._stop_marquee()
+        self._marquee = {"item": rec["item"], "full": rec["full"] + "    ",
+                         "x_start": rec["x_start"], "offset": 0}
+        self._marquee_after = self.root.after(400, self._marquee_step)   # brief pause, then scroll
+
+    def _marquee_step(self):
+        m = self._marquee
+        if m is None:
+            return
+        s = m["full"]
+        view = s[m["offset"]:] + s[:m["offset"]]
+        try:
+            self.canvas.itemconfig(m["item"], text=self._fit_px(view, m["x_start"]))
+        except tk.TclError:
+            self._stop_marquee(); return
+        m["offset"] = (m["offset"] + 1) % len(s)
+        self._marquee_after = self.root.after(110, self._marquee_step)
+
+    def _stop_marquee(self):
+        if self._marquee_after is not None:
+            try:
+                self.root.after_cancel(self._marquee_after)
+            except Exception:
+                pass
+            self._marquee_after = None
+        if self._marquee is not None:
+            rec = next((r for r in self._scroll_lines if r["item"] == self._marquee["item"]), None)
+            if rec is not None:
+                try:
+                    self.canvas.itemconfig(rec["item"], text=self._fit_px(rec["full"], rec["x_start"]))
+                except tk.TclError:
+                    pass
+            self._marquee = None
+
     def _on_motion(self, event):
         self._hover_xy = (event.x, event.y)
         self._apply_hover()
+        rec = self._scroll_line_at(event.x, event.y)
+        if rec is not None:
+            self._start_marquee(rec)
+        else:
+            self._stop_marquee()
 
     def _on_leave(self, event):
         self._hover_xy = None
         self._apply_hover()
+        self._stop_marquee()
 
     def _fit_px(self, text, x_start):
         """Trim text with an ellipsis so it fits from x_start to the right margin
@@ -613,6 +673,8 @@ class Hud:
         self._feed_items = []
         self._hit = []
         self._action_hits = []
+        self._stop_marquee()
+        self._scroll_lines = []
         if self._hover_item is not None:
             c.delete(self._hover_item)
             self._hover_item = None
@@ -756,6 +818,7 @@ class Hud:
             except Exception:
                 pass
             self._drain_after = None
+        self._stop_marquee()
         try:
             self.manager.stop()
         except Exception:

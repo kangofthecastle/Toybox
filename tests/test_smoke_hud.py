@@ -1153,5 +1153,87 @@ class TestHudExpand(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudMarquee(_HudTestBase):
+    def _evt(self, x, y):
+        return type("E", (), {"x": x, "y": y})()
+
+    def _long_feed(self):
+        return [{"type": "rss", "url": "https://t", "title": "T", "tab": "tech"}]
+
+    def _draw_long(self, hud, root):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        hud.active_tab = "tech"
+        hud.feed_state[0] = manager.FeedResult(
+            "ok", [Item("This headline is far too long to fit within the narrow hud width for sure",
+                        "https://t/a")], None, None)
+        hud._draw_feeds(); root.update_idletasks()
+
+    def test_drain_without_new_data_does_not_redraw(self):
+        root, hud = self._make_hud(self._long_feed())
+        try:
+            calls = []
+            orig = hud._draw_feeds
+            hud._draw_feeds = lambda: (calls.append(1), orig())[1]
+            hud.manager.drain = lambda: []
+            hud._drain_feeds()
+            self.assertEqual(calls, [])                          # no new data -> no redraw
+            import feedkit.manager as manager
+            from feedkit.model import Item
+            hud.manager.drain = lambda: [(0, manager.FeedResult("ok", [Item("x", "https://t/x")], None, None))]
+            hud._drain_feeds()
+            self.assertEqual(calls, [1])                         # new data -> one redraw
+        finally:
+            if hud._drain_after:
+                root.after_cancel(hud._drain_after)
+            hud.close(); root.destroy()
+
+    def test_hover_truncated_line_starts_and_animates_marquee(self):
+        root, hud = self._make_hud(self._long_feed())
+        try:
+            self._draw_long(hud, root)
+            self.assertTrue(hud._scroll_lines, "expected a truncated (scrollable) line")
+            rec = hud._scroll_lines[0]
+            before = hud.canvas.itemcget(rec["item"], "text")
+            hud._on_motion(self._evt(60, (rec["y0"] + rec["y1"]) // 2))
+            self.assertIsNotNone(hud._marquee)
+            hud._marquee_step(); hud._marquee_step()
+            after = hud.canvas.itemcget(rec["item"], "text")
+            self.assertNotEqual(before, after)                  # text scrolled
+        finally:
+            hud._stop_marquee()
+            hud.close(); root.destroy()
+
+    def test_leave_stops_marquee_and_restores_text(self):
+        root, hud = self._make_hud(self._long_feed())
+        try:
+            self._draw_long(hud, root)
+            rec = hud._scroll_lines[0]
+            truncated = hud.canvas.itemcget(rec["item"], "text")
+            hud._on_motion(self._evt(60, (rec["y0"] + rec["y1"]) // 2))
+            hud._marquee_step()
+            hud._on_leave(self._evt(0, 0))
+            self.assertIsNone(hud._marquee)
+            self.assertEqual(hud.canvas.itemcget(rec["item"], "text"), truncated)   # restored
+        finally:
+            hud.close(); root.destroy()
+
+    def test_hover_short_line_no_marquee(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        root, hud = self._make_hud(self._long_feed())
+        try:
+            hud.active_tab = "tech"
+            hud.feed_state[0] = manager.FeedResult("ok", [Item("short", "https://t/s")], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(hud._scroll_lines, [])             # nothing truncated
+            for y0, y1, _u in hud._hit:
+                hud._on_motion(self._evt(60, (y0 + y1) // 2))
+            self.assertIsNone(hud._marquee)                     # short line never scrolls
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
