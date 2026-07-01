@@ -644,9 +644,10 @@ class Hud:
             rec = next((r for r in self._scroll_lines if r["item"] == self._marquee["item"]), None)
             if rec is not None:
                 try:
-                    y = self.canvas.coords(rec["item"])[1]
-                    self.canvas.coords(rec["item"], rec["x_start"], y)
-                    self.canvas.itemconfig(rec["item"], text=self._fit_px(rec["full"], rec["x_start"]))
+                    xy = self.canvas.coords(rec["item"])
+                    if xy:  # empty list means item was already deleted (e.g. by _draw_feeds)
+                        self.canvas.coords(rec["item"], rec["x_start"], xy[1])
+                        self.canvas.itemconfig(rec["item"], text=self._fit_px(rec["full"], rec["x_start"]))
                 except tk.TclError:
                     pass
             self._marquee = None
