@@ -62,6 +62,8 @@ STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
 STOCK_UP = "#3fb950"       # green: day change >= 0
 STOCK_DOWN = "#f85149"     # red: day change < 0
 STOCK_CHART_H = 20         # px per drawn price-chart row
+ACCENT = "#33d6ff"         # cyan: active-tab + active range-toggle indicator
+HOVER_BG = "#24242e"       # subtle highlight band behind the hovered row/tab
 URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
 DISMISS_GLYPH = "✕"   # ✕  per-item mark-read
 MARKALL_GLYPH = "✓"   # ✓  header mark-all-read
@@ -593,6 +595,10 @@ class Hud:
             self._feed_items.append(tid)
             w = self._feed_font_measure.measure(label)
             self._register_action(row_y, x, x + w, ("tab", key))
+            if active:
+                uy = row_y + FEED_LINE_H // 2 - 1
+                ul = c.create_rectangle(x, uy, x + w, uy + 2, fill=ACCENT, outline="")
+                self._feed_items.append(ul)
             x += w + 6
         rid = c.create_text(WIDTH - PAD, row_y, anchor="e", text=RELOAD_GLYPH,
                             fill=FEED_DIM, font=FEED_TITLE_FONT)
@@ -602,6 +608,8 @@ class Hud:
 
     def _draw_github_header(self, y):
         c = self.canvas
+        dv = c.create_line(PAD, y + 1, WIDTH - PAD, y + 1, fill=FEED_DIM, width=1)
+        self._feed_items.append(dv)
         row_y = y + FEED_LINE_H // 2
         tid = c.create_text(PAD, row_y, anchor="w", text="GitHub", fill=FEED_DIM, font=FEED_TITLE_FONT)
         self._feed_items.append(tid)
@@ -656,6 +664,10 @@ class Hud:
             self._feed_items.append(tid)
             w = self._feed_font_measure.measure(label)
             self._register_action(row_y, x - w, x, ("range", idx, code))
+            if active:
+                uy = row_y + FEED_LINE_H // 2 - 1
+                ul = c.create_rectangle(x - w, uy, x, uy + 2, fill=ACCENT, outline="")
+                self._feed_items.append(ul)
             x -= w + 6
 
     def _resize(self, wanted_h):

@@ -929,6 +929,53 @@ class TestHudPartition(_HudTestBase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudAccents(_HudTestBase):
+    def _accent_rects(self, hud):
+        import hud as hudmod
+        return [i for i in hud._feed_items
+                if hud.canvas.type(i) == "rectangle"
+                and hud.canvas.itemcget(i, "fill") == hudmod.ACCENT]
+
+    def test_active_tab_has_accent_underline(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.active_tab = "tech"
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(self._accent_rects(hud), "no accent underline for active tab")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_github_divider_line_drawn(self):
+        import hud as hudmod
+        feeds = [{"type": "github", "repo": "o/r", "title": "Repo"}]
+        root, hud = self._make_hud(feeds)
+        try:
+            hud._draw_feeds(); root.update_idletasks()
+            spans = []
+            for i in hud._feed_items:
+                if hud.canvas.type(i) == "line":
+                    x0, _y0, x1, _y1 = hud.canvas.coords(i)
+                    spans.append((x0, x1))
+            self.assertTrue(any(x0 <= hudmod.PAD + 1 and x1 >= hudmod.WIDTH - hudmod.PAD - 1
+                                for x0, x1 in spans), "no full-width divider before GitHub")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_active_range_segment_has_accent(self):
+        import feedkit.manager as manager
+        from feedkit.model import Quote
+        feed = {"type": "stocks", "title": "Markets", "symbols": ["SPY"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed])
+        try:
+            hud.active_tab = "markets"
+            hud.feed_state[0] = manager.FeedResult("ok", [Quote("SPY", 1.0, 0.5, [1.0, 2.0])], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(self._accent_rects(hud), "no accent underline for active range")
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestHudFitPx(_HudTestBase):
     def test_fit_px_unit(self):
         import hud as hudmod
