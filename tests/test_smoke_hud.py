@@ -1118,15 +1118,34 @@ class TestHudExpand(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
-    def test_expand_action_registered_and_dispatches(self):
+    def test_expand_button_is_header_control_not_on_tabbar(self):
+        import hud as hudmod
         root, hud = self._make_hud([])
         try:
             hud._draw_feeds(); root.update_idletasks()
-            self.assertTrue(any(a == ("width",) for (_y0, _y1, _x0, _x1, a) in hud._action_hits),
-                            "no expand-button action zone")
-            import hud as hudmod
-            hud._dispatch_action(("width",)); root.update_idletasks()
-            self.assertEqual(hud.width, hudmod.WIDTH_WIDE)       # dispatch toggled it
+            # no ("width",) action zone remains on the tab bar
+            self.assertFalse(any(a == ("width",) for (_a, _b, _c, _d, a) in hud._action_hits))
+            # a bright (ACCENT) expand glyph exists as a persistent header item
+            self.assertEqual(hud.canvas.itemcget(hud._expand_text, "fill"), hudmod.ACCENT)
+            self.assertEqual(hud.canvas.itemcget(hud._expand_text, "text"), hudmod.EXPAND_GLYPH)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_click_in_expand_box_toggles_width(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            x0, y0, x1, y1 = hud._expand_box
+            ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+            hud._moved = False
+            hud._on_release(ev); root.update_idletasks()
+            self.assertEqual(hud.width, hudmod.WIDTH_WIDE)   # a real click toggled it
+            hud._moved = False
+            # after widening, the box moved to the new right edge; recompute and click again
+            x0, y0, x1, y1 = hud._expand_box
+            ev2 = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+            hud._on_release(ev2); root.update_idletasks()
+            self.assertEqual(hud.width, hudmod.WIDTH)        # toggled back
         finally:
             hud.close(); root.destroy()
 

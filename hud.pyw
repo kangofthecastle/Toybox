@@ -169,6 +169,9 @@ class Hud:
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
         self._clock_text = c.create_text(self.width // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
+        self._expand_text = c.create_text(self.width - PAD, y3, anchor="e",
+                                          text=EXPAND_GLYPH, fill=ACCENT, font=CLOCK_FONT)
+        self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
         self._cpu_line = c.create_line(0, 0, 0, 0, fill=CPU_COLOR, width=1, state="hidden")
         self._ram_line = c.create_line(0, 0, 0, 0, fill=RAM_COLOR, width=1, state="hidden")
         self._gpu_line = c.create_line(0, 0, 0, 0, fill=GPU_COLOR, width=1, state="hidden")
@@ -239,6 +242,9 @@ class Hud:
 
     def _on_release(self, event):
         if not self._moved:
+            if self._in_expand(event.x, event.y):
+                self._toggle_width()
+                return
             key = self._media_at(event.x, event.y)        # persistent media glyph zones (unchanged)
             if key is not None:
                 self._do_media(key)
@@ -267,10 +273,14 @@ class Hud:
             (self._refresh_news if action[1] == "news" else self._refresh_github)()
         elif kind == "range":
             self._set_stock_range(action[1], action[2])
-        elif kind == "width":
-            self._toggle_width()
         else:
             self._do_dismiss(action)
+
+    def _in_expand(self, x, y):
+        """True if (x, y) is within the fixed expand/collapse control on the clock
+        row (a constant box, like the old _reload_box)."""
+        x0, y0, x1, y1 = self._expand_box
+        return x0 <= x <= x1 and y0 <= y <= y1
 
     def _media_at(self, x, y):
         """Return the media-control key at (x, y) among the three fixed glyph
@@ -717,11 +727,6 @@ class Hud:
                             fill=FEED_DIM, font=FEED_TITLE_FONT)
         self._feed_items.append(rid)
         self._register_action(row_y, self.width - PAD - ACTION_ZONE_W, self.width, ("refresh", "news"))
-        ex_x = self.width - PAD - ACTION_ZONE_W - 6
-        eid = c.create_text(ex_x, row_y, anchor="e", text=EXPAND_GLYPH,
-                            fill=FEED_DIM, font=FEED_TITLE_FONT)
-        self._feed_items.append(eid)
-        self._register_action(row_y, ex_x - ACTION_ZONE_W, ex_x, ("width",))
         return y + FEED_LINE_H + FEED_TITLE_GAP
 
     def _draw_github_header(self, y):
@@ -865,6 +870,9 @@ class Hud:
             (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
         ]
+        y3 = PAD + 3 * ROW_H + ROW_H // 2
+        c.coords(self._expand_text, self.width - PAD, y3)
+        self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
 
     def _set_active_tab(self, key):
         self.active_tab = feedmodel.coerce_tab(key)
