@@ -756,6 +756,30 @@ class TestHudStocks(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_stale_tile_dims_quote_to_feed_dim(self):
+        import feedkit.manager as manager
+        import hud as hudmod
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            hud.feed_state[0] = manager.FeedResult(
+                "stale", [self._q(symbol="SPY", change=0.5)], None, "offline")
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "SPY"), hudmod.FEED_DIM)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_error_tile_shows_error_placeholder(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            hud.feed_state[0] = manager.FeedResult("error", [], None, "offline")
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("! offline"))
+        finally:
+            hud.close(); root.destroy()
+
     def test_loading_placeholder_when_no_quotes(self):
         root, hud = self._make_hud([self.FEED])
         try:

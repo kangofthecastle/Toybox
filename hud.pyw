@@ -259,7 +259,7 @@ class Hud:
 
     def _media_at(self, x, y):
         """Return the media-control key at (x, y) among the three fixed glyph
-        zones, or None. Boxes are constants (persistent glyphs), like _reload_box."""
+        zones, or None. Boxes are constants (persistent glyphs)."""
         for x0, x1, y0, y1, key in self._media_hits:
             if x0 <= x <= x1 and y0 <= y <= y1:
                 return key
@@ -525,7 +525,7 @@ class Hud:
             self._hit.append((y - FEED_LINE_H // 2, y + FEED_LINE_H // 2, url))
 
     def _register_action(self, y, x0, x1, action):
-        """Record an x-aware click zone that fires a manager action (mark-read),
+        """Record an x-aware action zone (dismiss/mark-all AND tab/refresh/range),
         NOT a browser open. Checked before the open-URL hits, so the narrow
         right-edge zone never opens the thread."""
         self._action_hits.append((y - FEED_LINE_H // 2, y + FEED_LINE_H // 2, x0, x1, action))

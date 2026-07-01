@@ -390,6 +390,14 @@ class TestParseStockChart(unittest.TestCase):
         self.assertAlmostEqual(q.price, 101.0)                 # fallback to last close
         self.assertAlmostEqual(q.change_pct, 1.0)             # (101-100)/100*100
 
+    def test_previousclose_fallback_when_chartpreviousclose_absent(self):
+        # previousClose should be used when chartPreviousClose is not present.
+        body = json.dumps({"chart": {"result": [{
+            "meta": {"regularMarketPrice": 101.0, "previousClose": 100.0},
+            "indicators": {"quote": [{"close": [100.0, 101.0]}]}}],
+            "error": None}}).encode()
+        self.assertAlmostEqual(parse.parse_stock_chart(body, "X").change_pct, 1.0)
+
     def test_missing_prevclose_is_zero_change(self):
         body = json.dumps({"chart": {"result": [{
             "meta": {"regularMarketPrice": 50.0},
