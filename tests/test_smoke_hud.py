@@ -1558,5 +1558,103 @@ class TestHudNowPlaying(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNowPlayingMarquee(_HudTestBase):
+    LONG = "A tremendously long now-playing track title that will never fit"
+    ARTIST = "An Equally Long Artist Name Goes Right Here"
+
+    def _sample(self, title, artist=ARTIST, status="playing",
+                position_s=30.0, duration_s=120.0):
+        import time
+        import winkit.nowplaying as nowplaying
+        return nowplaying.NowPlaying(title, artist, status, position_s,
+                                     duration_s, time.monotonic())
+
+    def test_short_title_is_static_and_centered(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample("Hi", artist="X")
+            hud._draw_nowplaying()
+            self.assertIsNone(hud._np_scroll)                       # fits => no scrolling
+            self.assertEqual(hud.canvas.coords(hud._np_title)[0], hudmod.WIDTH // 2)
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "anchor"), "center")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_long_title_shows_full_text_and_scrolls_left(self):
+        import winkit.nowplaying as nowplaying
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            self.assertIsNotNone(hud._np_scroll)                    # overflow => scroll
+            self.assertGreater(hud._np_scroll["max"], 0)
+            shown = hud.canvas.itemcget(hud._np_title, "text")
+            self.assertEqual(shown, nowplaying.format_track(self.LONG, self.ARTIST))
+            self.assertNotIn("…", shown)                            # full text, not ellipsized
+            x_before = hud.canvas.coords(hud._np_title)[0]
+            for _ in range(6):
+                hud._np_marquee_step()
+            x_after = hud.canvas.coords(hud._np_title)[0]
+            self.assertLess(x_after, x_before)                      # scrolled left by pixels
+        finally:
+            hud.close(); root.destroy()
+
+    def test_long_title_wraps_to_start_not_bounce(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            m = hud._np_scroll
+            offsets = []
+            for _ in range(m["max"] // 2 + 60):
+                hud._np_marquee_step()
+                offsets.append(hud._np_scroll["offset"])
+            self.assertIn(m["max"], offsets)                        # scrolled to the end
+            i = offsets.index(m["max"])
+            j = i
+            while j < len(offsets) and offsets[j] == m["max"]:
+                j += 1                                              # skip the end pause
+            self.assertLess(j, len(offsets), "expected motion after the end pause")
+            self.assertEqual(offsets[j], 0)                         # wraps to start, not bounce
+        finally:
+            hud.close(); root.destroy()
+
+    def test_switch_long_to_short_returns_to_static(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            self.assertIsNotNone(hud._np_scroll)
+            with hud._np_lock:
+                hud._np_latest = self._sample("Hi", artist="X")
+            hud._draw_nowplaying()
+            self.assertIsNone(hud._np_scroll)                       # back to static
+            self.assertEqual(hud.canvas.coords(hud._np_title)[0], hudmod.WIDTH // 2)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_stopped_clears_scroll_state(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            self.assertIsNotNone(hud._np_scroll)
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG, status="stopped")
+            hud._draw_nowplaying()
+            self.assertIsNone(hud._np_scroll)                       # stopped => no ticker
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "text"), "")
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

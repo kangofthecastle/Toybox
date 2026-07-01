@@ -222,6 +222,8 @@ class Hud:
         self._np_latest = None                       # NowPlaying or None (poll thread writes)
         self._np_stop = threading.Event()
         self._np_thread = None
+        self._np_scroll = None            # now-playing title ticker state, or None (fits/blank)
+        self._np_marquee_after = None     # pending after() id for the ticker loop
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
@@ -450,31 +452,72 @@ class Hud:
         self._np_thread.start()
 
     def _draw_nowplaying(self):
-        """Update the title line + progress bar from the latest SMTC sample,
-        advancing the position with wall-clock so the bar moves smoothly between
-        reads. Blank when nothing is playing. Never raises."""
+        """Update the title line + progress bar from the latest SMTC sample. The
+        bar advances with wall-clock so it moves smoothly between reads. A title
+        that fits renders static and centered; a title that overflows the tile
+        auto-scrolls (music-player ticker: scroll left to reveal the end, then
+        jump back to the start -- never bouncing). Blank when nothing is playing.
+        Never raises."""
         c = self.canvas
         with self._np_lock:
             s = self._np_latest
         left = PAD
         right = self.width - PAD
         y0, y1 = self._np_bar_y, self._np_bar_y + NP_BAR_H
-        if s is None or s.status == "stopped":
-            try:
-                c.itemconfig(self._np_title, text="")
-                c.coords(self._np_bar, left, y0, left, y1)   # zero width => blank
-            except tk.TclError:
-                pass
-            return
         try:
+            title_y = self.canvas.coords(self._np_title)[1]
+            if s is None or s.status == "stopped":
+                self._np_scroll = None                       # nothing playing -> no ticker
+                c.itemconfig(self._np_title, text="", anchor="center")
+                c.coords(self._np_title, self.width // 2, title_y)
+                c.coords(self._np_bar, left, y0, left, y1)   # zero width => blank
+                return
             text = nowplaying.format_track(s.title, s.artist)
-            c.itemconfig(self._np_title, text=self._fit_px(text, PAD) if text else "")
             pos = nowplaying.advance(s.position_s, time.monotonic() - s.sampled_at,
                                      s.status)
             frac = nowplaying.progress_fraction(pos, s.duration_s)
             c.coords(self._np_bar, left, y0, left + int((right - left) * frac), y1)
+            c.itemconfig(self._np_title, text=text)          # FULL text; the widget edge clips overflow
+            max_off = nowplaying.marquee_scroll_max(
+                self._feed_font_measure.measure(text), right - left)
+            if max_off <= 0:
+                self._np_scroll = None                       # fits => static, centered
+                c.itemconfig(self._np_title, anchor="center")
+                c.coords(self._np_title, self.width // 2, title_y)
+            else:
+                if self._np_scroll is None or self._np_scroll.get("text") != text:
+                    self._np_scroll = {"text": text, "offset": 0, "pause": 0}
+                self._np_scroll["max"] = max_off
+                self._np_scroll["base_x"] = left
+                c.itemconfig(self._np_title, anchor="w")
+                c.coords(self._np_title, left - self._np_scroll["offset"], title_y)
+                self._np_marquee_ensure()                    # kick the ticker loop if idle
         except tk.TclError:
             pass
+
+    def _np_marquee_ensure(self):
+        """Start the now-playing ticker loop if it is not already scheduled. The
+        loop self-stops when _np_scroll goes None (title fits or nothing plays)."""
+        if self._np_marquee_after is None:
+            self._np_marquee_after = self.root.after(33, self._np_marquee_step)
+
+    def _np_marquee_step(self):
+        """Advance the persistent now-playing title one pixel-motion tick using the
+        SAME wrap math as the feed marquee (nowplaying.marquee_step). Runs only
+        while a long title overflows; stops itself otherwise. Never raises."""
+        m = self._np_scroll
+        if m is None:
+            self._np_marquee_after = None                    # nothing to scroll -> stop the loop
+            return
+        try:
+            m["offset"], m["pause"] = nowplaying.marquee_step(
+                m["offset"], m["max"], m["pause"])
+            y = self.canvas.coords(self._np_title)[1]
+            self.canvas.coords(self._np_title, m["base_x"] - m["offset"], y)
+        except tk.TclError:
+            self._np_marquee_after = None
+            return
+        self._np_marquee_after = self.root.after(33, self._np_marquee_step)
 
     # --- feeds ------------------------------------------------------------
     def _github_token(self):
@@ -701,16 +744,8 @@ class Hud:
         if m is None:
             return
         try:
-            if m["pause"] > 0:
-                m["pause"] -= 1
-            elif m["offset"] >= m["max"]:
-                m["offset"] = 0            # reached the end -> jump back to the start, then loop
-                m["pause"] = 10            # brief pause at the start before scrolling again
-            else:
-                m["offset"] += 2
-                if m["offset"] >= m["max"]:
-                    m["offset"] = m["max"]
-                    m["pause"] = 10        # brief pause showing the end, then wrap next tick
+            m["offset"], m["pause"] = nowplaying.marquee_step(
+                m["offset"], m["max"], m["pause"])   # shared wrap math (0->max->0, no bounce)
             y = self.canvas.coords(m["item"])[1]
             self.canvas.coords(m["item"], m["base_x"] - m["offset"], y)
         except tk.TclError:
@@ -921,6 +956,12 @@ class Hud:
             self._drain_after = None
         self._stop_marquee()
         self._np_stop.set()
+        if self._np_marquee_after is not None:
+            try:
+                self.root.after_cancel(self._np_marquee_after)
+            except Exception:
+                pass
+            self._np_marquee_after = None
         try:
             self.manager.stop()
         except Exception:
