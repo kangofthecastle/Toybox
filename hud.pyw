@@ -34,8 +34,9 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-NOWPLAYING_H = 20      # reserved band under the media row: title line + progress bar
+NOWPLAYING_H = 32      # reserved band under the media row: title + bar + time labels
 NP_BAR_H = 3           # progress-bar thickness (px)
+NP_TIME_W = 34         # inset each side of the bar for the M:SS elapsed/total labels
 HEIGHT = 156 + NOWPLAYING_H   # 6 header rows + reserved now-playing band + margin
 WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
@@ -67,6 +68,7 @@ MEDIA_PREV = "⏮"
 MEDIA_PLAY = "⏯"
 MEDIA_NEXT = "⏭"
 NP_TITLE_FONT = ("Consolas", 9)
+NP_TIME_FONT = ("Consolas", 8)   # elapsed / total M:SS labels flanking the bar
 NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
 NP_POLL_S = 2.5        # background SMTC read interval (seconds)
 
@@ -273,23 +275,33 @@ class Hud:
         self._media_hover = None   # which media glyph is currently hover-highlighted
 
         # Now-playing band: reserved directly below the media row so the header
-        # never jumps when playback starts/stops.
+        # never jumps when playback starts/stops. Two rows: the title, then the
+        # progress bar flanked by elapsed/total M:SS time labels.
         np_top = ymedia + ROW_H // 2                 # bottom edge of the media row band
-        self._np_bar_y = np_top + NOWPLAYING_H - NP_BAR_H - 1
-        self._np_title = c.create_text(self.width // 2, np_top + 6, anchor="center",
+        self._np_row_y = np_top + NOWPLAYING_H - 8   # baseline of the bar + time labels
+        self._np_bar_y = self._np_row_y - NP_BAR_H // 2
+        b_left, b_right = self._np_bar_bounds()
+        self._np_title = c.create_text(self.width // 2, np_top + 8, anchor="center",
                                        text="", fill=DIM, font=NP_TITLE_FONT)
-        self._np_bar_bg = c.create_rectangle(PAD, self._np_bar_y, self.width - PAD,
+        self._np_bar_bg = c.create_rectangle(b_left, self._np_bar_y, b_right,
                                              self._np_bar_y + NP_BAR_H,
                                              fill=NP_TRACK, outline="")
-        self._np_bar = c.create_rectangle(PAD, self._np_bar_y, PAD,
+        self._np_bar = c.create_rectangle(b_left, self._np_bar_y, b_left,
                                           self._np_bar_y + NP_BAR_H,
                                           fill=ACCENT, outline="")
+        self._np_elapsed = c.create_text(b_left - 5, self._np_row_y, anchor="e",
+                                         text="", fill=DIM, font=NP_TIME_FONT)
+        self._np_total = c.create_text(b_right + 5, self._np_row_y, anchor="w",
+                                       text="", fill=DIM, font=NP_TIME_FONT)
         self._np_lock = threading.Lock()
         self._np_latest = None                       # NowPlaying or None (poll thread writes)
         self._np_stop = threading.Event()
         self._np_thread = None
         self._np_scroll = None            # now-playing title ticker state, or None (fits/blank)
         self._np_marquee_after = None     # pending after() id for the ticker loop
+        self._np_seekable = False         # True only while a timeline is present (click-to-seek armed)
+        self._np_bar_span = (b_left, b_right)   # last drawn bar span, for seek hit-testing
+        self._np_duration = 0.0           # last drawn track duration (s), for seek target math
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
@@ -325,6 +337,7 @@ class Hud:
         if not _smoke_ms():
             self.manager.start()   # no worker / no network under smoke launches
             self._start_nowplaying()
+        self._tick_after = None
         self.tick()
         self._drain_after = self.root.after(250, self._drain_feeds)
 
@@ -350,6 +363,8 @@ class Hud:
             key = self._media_at(event.x, event.y)        # persistent media glyph zones (unchanged)
             if key is not None:
                 self._do_media(key)
+                return
+            if self._np_seek_at(event.x, event.y):        # click on the progress bar -> seek
                 return
             action = self._action_at(event.x, event.y)   # tab/refresh/range/dismiss zones
             if action is not None:
@@ -483,7 +498,7 @@ class Hud:
             self._disk_at = now
         self._draw()
         self._draw_nowplaying()
-        self.root.after(1000, self.tick)
+        self._tick_after = self.root.after(1000, self.tick)
 
     def _draw(self):
         c = self.canvas
@@ -534,42 +549,58 @@ class Hud:
                                             daemon=True)
         self._np_thread.start()
 
+    def _np_bar_bounds(self):
+        """Horizontal span (x_left, x_right) of the progress bar, inset on both
+        sides to leave room for the elapsed/total M:SS time labels."""
+        return PAD + NP_TIME_W, self.width - PAD - NP_TIME_W
+
     def _draw_nowplaying(self):
-        """Update the title line + progress bar from the latest SMTC sample. The
-        bar advances with wall-clock so it moves smoothly between reads. A title
-        that fits renders static and centered; a title that overflows the tile
-        auto-scrolls (music-player ticker: scroll left to reveal the end, then
-        jump back to the start -- never bouncing). Blank when nothing is playing.
+        """Update the title line, progress bar and elapsed/total time labels from
+        the latest SMTC sample. The bar advances with wall-clock so it moves
+        smoothly between reads. A title that fits renders static and centered; a
+        title that overflows auto-scrolls (music-player ticker: scroll left to
+        reveal the end, then jump back to the start -- never bouncing). Blank when
+        nothing is playing; bar + times hidden when the source has no timeline.
         Never raises."""
         c = self.canvas
         with self._np_lock:
             s = self._np_latest
-        left = PAD
-        right = self.width - PAD
+        t_left, t_right = PAD, self.width - PAD           # title budget: full width
+        b_left, b_right = self._np_bar_bounds()           # bar span: inset for time labels
         y0, y1 = self._np_bar_y, self._np_bar_y + NP_BAR_H
         try:
+            # np items are persistent (created once, never deleted), so coords()
+            # always returns a populated list here -- [1] is safe.
             title_y = self.canvas.coords(self._np_title)[1]
             if s is None or s.status == "stopped":
                 self._np_scroll = None                       # nothing playing -> no ticker
+                self._np_seekable = False
                 c.itemconfig(self._np_title, text="", anchor="center")
                 c.coords(self._np_title, self.width // 2, title_y)
-                c.coords(self._np_bar, left, y0, left, y1)   # zero width => blank
-                c.itemconfig(self._np_bar_bg, state="hidden")
+                c.coords(self._np_bar, b_left, y0, b_left, y1)   # zero width => blank
+                for it in (self._np_bar_bg, self._np_elapsed, self._np_total):
+                    c.itemconfig(it, state="hidden")
                 return
             text = nowplaying.format_track(s.title, s.artist)
             pos = nowplaying.advance(s.position_s, time.monotonic() - s.sampled_at,
                                      s.status)
             frac = nowplaying.progress_fraction(pos, s.duration_s)
-            if s.duration_s > 0:                             # source publishes a timeline -> show bar
-                c.itemconfig(self._np_bar_bg, state="normal")
-                c.itemconfig(self._np_bar, state="normal")
-                c.coords(self._np_bar, left, y0, left + int((right - left) * frac), y1)
-            else:                                            # no timeline (e.g. foobar2000) -> hide bar
-                c.itemconfig(self._np_bar_bg, state="hidden")
-                c.itemconfig(self._np_bar, state="hidden")
+            if s.duration_s > 0:                             # timeline present -> bar + times + seek
+                self._np_seekable = True
+                self._np_bar_span = (b_left, b_right)
+                self._np_duration = s.duration_s
+                for it in (self._np_bar_bg, self._np_bar, self._np_elapsed, self._np_total):
+                    c.itemconfig(it, state="normal")
+                c.coords(self._np_bar, b_left, y0, b_left + int((b_right - b_left) * frac), y1)
+                c.itemconfig(self._np_elapsed, text=nowplaying.format_clock(pos))
+                c.itemconfig(self._np_total, text=nowplaying.format_clock(s.duration_s))
+            else:                                            # no timeline (e.g. foobar2000) -> hide, no seek
+                self._np_seekable = False
+                for it in (self._np_bar_bg, self._np_bar, self._np_elapsed, self._np_total):
+                    c.itemconfig(it, state="hidden")
             c.itemconfig(self._np_title, text=text)          # FULL text; the widget edge clips overflow
             max_off = nowplaying.marquee_scroll_max(
-                self._feed_font_measure.measure(text), right - left)
+                self._feed_font_measure.measure(text), t_right - t_left)
             if max_off <= 0:
                 self._np_scroll = None                       # fits => static, centered
                 c.itemconfig(self._np_title, anchor="center")
@@ -578,9 +609,9 @@ class Hud:
                 if self._np_scroll is None or self._np_scroll.get("text") != text:
                     self._np_scroll = {"text": text, "offset": 0, "pause": 0}
                 self._np_scroll["max"] = max_off
-                self._np_scroll["base_x"] = left
+                self._np_scroll["base_x"] = t_left
                 c.itemconfig(self._np_title, anchor="w")
-                c.coords(self._np_title, left - self._np_scroll["offset"], title_y)
+                c.coords(self._np_title, t_left - self._np_scroll["offset"], title_y)
                 self._np_marquee_ensure()                    # kick the ticker loop if idle
         except tk.TclError:
             pass
@@ -602,12 +633,41 @@ class Hud:
         try:
             m["offset"], m["pause"] = nowplaying.marquee_step(
                 m["offset"], m["max"], m["pause"])
+            # _np_title is persistent (never deleted), so coords() is always
+            # populated here -- [1] is safe.
             y = self.canvas.coords(self._np_title)[1]
             self.canvas.coords(self._np_title, m["base_x"] - m["offset"], y)
         except tk.TclError:
             self._np_marquee_after = None
             return
         self._np_marquee_after = self.root.after(33, self._np_marquee_step)
+
+    def _np_seek_at(self, x, y):
+        """If (x, y) falls on the now-playing progress bar and a seekable timeline
+        is present, seek there -- optimistically jumping the local sample so the
+        bar moves at once -- and return True; otherwise return False. The real
+        SMTC seek runs off the UI thread (it can block ~1s)."""
+        if not self._np_seekable:
+            return False
+        b_left, b_right = self._np_bar_span
+        if not (b_left - 4 <= x <= b_right + 4 and
+                self._np_row_y - 8 <= y <= self._np_row_y + 8):
+            return False
+        target = nowplaying.seek_target_seconds(x, b_left, b_right, self._np_duration)
+        self._dispatch_seek(target)
+        with self._np_lock:                              # optimistic: reflect the seek now
+            s = self._np_latest
+            if s is not None:
+                self._np_latest = s._replace(position_s=target,
+                                             sampled_at=time.monotonic())
+        self._draw_nowplaying()
+        return True
+
+    def _dispatch_seek(self, position_s):
+        """Issue the SMTC seek off the UI thread (a test seam; the WinRT call can
+        block up to ~1s while it drives the async to completion)."""
+        threading.Thread(target=nowplaying.seek, args=(position_s,),
+                         name="np-seek", daemon=True).start()
 
     # --- feeds ------------------------------------------------------------
     def _github_token(self):
@@ -1210,6 +1270,12 @@ class Hud:
         # Cleanup only -- never destroys the root (mirrors petkit Cat.close). The
         # single root.destroy() is the quit path in main(); close() runs after it
         # (in main's finally) and the tests call close() then destroy() themselves.
+        if self._tick_after is not None:
+            try:
+                self.root.after_cancel(self._tick_after)
+            except Exception:
+                pass
+            self._tick_after = None
         if self._drain_after is not None:
             try:
                 self.root.after_cancel(self._drain_after)
@@ -1345,6 +1411,7 @@ class Hud:
         self.width = WIDTH_WIDE if self.width == WIDTH else WIDTH
         self._relayout_header()
         self._draw()          # repaint header (clock/media/sparklines) at the new width
+        self._draw_nowplaying()  # re-fill bar + reposition time labels at the new width
         self._draw_feeds()    # reflow feeds + resize the window (via _resize)
 
     def _relayout_header(self):
@@ -1355,7 +1422,11 @@ class Hud:
         cx = self.width // 2
         c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
         c.coords(self._np_title, cx, self.canvas.coords(self._np_title)[1])
-        c.coords(self._np_bar_bg, PAD, self._np_bar_y, self.width - PAD, self._np_bar_y + NP_BAR_H)
+        b_left, b_right = self._np_bar_bounds()
+        c.coords(self._np_bar_bg, b_left, self._np_bar_y, b_right, self._np_bar_y + NP_BAR_H)
+        c.coords(self._np_elapsed, b_left - 5, self._np_row_y)
+        c.coords(self._np_total, b_right + 5, self._np_row_y)
+        self._np_bar_span = (b_left, b_right)
         ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media row 5 (above clock)
         gap = 44
         c.coords(self._media_prev, cx - gap, ymedia)

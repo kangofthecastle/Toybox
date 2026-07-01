@@ -1544,6 +1544,32 @@ class TestHudNowPlaying(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_np_time_labels_show_elapsed_and_total(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(status="paused", position_s=60.0,
+                                              duration_s=120.0)
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_elapsed, "text"), "1:00")
+            self.assertEqual(hud.canvas.itemcget(hud._np_total, "text"), "2:00")
+            self.assertEqual(hud.canvas.itemcget(hud._np_elapsed, "state"), "normal")
+            self.assertEqual(hud.canvas.itemcget(hud._np_total, "state"), "normal")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_time_labels_hidden_when_no_timeline(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=0.0, duration_s=0.0)
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_elapsed, "state"), "hidden")
+            self.assertEqual(hud.canvas.itemcget(hud._np_total, "state"), "hidden")
+            self.assertFalse(hud._np_seekable)
+        finally:
+            hud.close(); root.destroy()
+
     def test_layout_reserved_and_stable_across_playback(self):
         root, hud = self._make_hud([])
         try:
@@ -1584,6 +1610,77 @@ class TestHudNowPlaying(_HudTestBase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNowPlayingSeek(_HudTestBase):
+    def _sample(self, title="Song", artist="Artist", status="playing",
+                position_s=0.0, duration_s=120.0):
+        import time
+        import winkit.nowplaying as nowplaying
+        return nowplaying.NowPlaying(title, artist, status, position_s,
+                                     duration_s, time.monotonic())
+
+    def _armed_hud(self, root_hud, position_s=0.0, duration_s=120.0):
+        hud = root_hud
+        with hud._np_lock:
+            hud._np_latest = self._sample(status="paused", position_s=position_s,
+                                          duration_s=duration_s)
+        hud._draw_nowplaying()
+
+    def test_click_on_bar_seeks_and_optimistically_updates(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud)                     # paused, 0/120, timeline present
+            b_left, b_right = hud._np_bar_span
+            mid_x = (b_left + b_right) // 2
+            self.assertTrue(hud._np_seek_at(mid_x, hud._np_row_y))
+            self.assertEqual(len(calls), 1)
+            self.assertAlmostEqual(calls[0], 60.0, delta=1.0)   # midpoint of 120s
+            with hud._np_lock:
+                self.assertAlmostEqual(hud._np_latest.position_s, 60.0, delta=1.0)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_no_seek_without_timeline(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud, duration_s=0.0)     # no timeline -> not seekable
+            b_left, b_right = hud._np_bar_span
+            self.assertFalse(hud._np_seek_at((b_left + b_right) // 2, hud._np_row_y))
+            self.assertEqual(calls, [])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_click_off_the_bar_row_ignored(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud)
+            b_left, b_right = hud._np_bar_span
+            self.assertFalse(hud._np_seek_at((b_left + b_right) // 2,
+                                             hud._np_row_y + 40))   # far below the bar
+            self.assertEqual(calls, [])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_on_release_routes_bar_click_to_seek(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud)
+            b_left, b_right = hud._np_bar_span
+            ev = type("E", (), {"x": (b_left + b_right) // 2, "y": hud._np_row_y})()
+            hud._moved = False
+            hud._on_release(ev)
+            self.assertEqual(len(calls), 1)          # plain click on bar -> seek dispatched
+        finally:
+            hud.close(); root.destroy()
+
+
 class TestHudNowPlayingMarquee(_HudTestBase):
     LONG = "A tremendously long now-playing track title that will never fit"
     ARTIST = "An Equally Long Artist Name Goes Right Here"
