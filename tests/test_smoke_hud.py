@@ -671,5 +671,38 @@ class TestHudGpuRow(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudMediaRow(_HudTestBase):
+    def _texts(self, hud):
+        return [hud.canvas.itemcget(i, "text") for i in hud.canvas.find_all()
+                if hud.canvas.type(i) == "text"]
+
+    def test_media_glyphs_rendered(self):
+        root, hud = self._make_hud([])
+        try:
+            texts = self._texts(hud)
+            for g in ("⏮", "⏯", "⏭"):
+                self.assertIn(g, texts)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_media_clicks_call_controls_in_order(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            with mock.patch.object(hudmod.media, "prev_track", lambda: calls.append("prev")), \
+                 mock.patch.object(hudmod.media, "play_pause", lambda: calls.append("playpause")), \
+                 mock.patch.object(hudmod.media, "next_track", lambda: calls.append("next")):
+                for (x0, x1, y0, y1, key) in hud._media_hits:
+                    ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+                    hud._moved = False
+                    hud._on_release(ev)
+            self.assertEqual(sorted(calls), ["next", "playpause", "prev"])
+            self.assertEqual(len(calls), 3)
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

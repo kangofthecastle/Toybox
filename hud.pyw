@@ -15,6 +15,7 @@ import tkinter.font as tkfont
 import tkinter.messagebox as tkmsg
 import winkit.window as window
 import winkit.metrics as metrics
+import winkit.media as media
 import config
 import webbrowser
 import timeago
@@ -27,7 +28,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-HEIGHT = 112          # 4 header rows (CPU/RAM/GPU/clock) + margin
+HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/clock/media) + margin
 PAD = 10
 ROW_H = 22
 LABEL_X = PAD
@@ -44,6 +45,10 @@ RAM_COLOR = "#ff5cc8"  # magenta
 GPU_COLOR = "#7ee787"  # green
 FONT = ("Consolas", 11)
 CLOCK_FONT = ("Consolas", 11, "bold")
+MEDIA_FONT = ("Segoe UI Symbol", 12)
+MEDIA_PREV = "⏮"
+MEDIA_PLAY = "⏯"
+MEDIA_NEXT = "⏭"
 
 FEED_FONT = ("Consolas", 9)
 FEED_TITLE_FONT = ("Consolas", 9, "bold")
@@ -142,6 +147,19 @@ class Hud:
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
         self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
+        ymedia = PAD + 4 * ROW_H + ROW_H // 2
+        cx = WIDTH // 2
+        gap = 44
+        self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
+        self._media_play = c.create_text(cx, ymedia, text=MEDIA_PLAY, fill=FG, font=MEDIA_FONT)
+        self._media_next = c.create_text(cx + gap, ymedia, text=MEDIA_NEXT, fill=FG, font=MEDIA_FONT)
+        half = ACTION_ZONE_W
+        self._media_hits = [
+            (cx - gap - half, cx - gap + half, ymedia - 11, ymedia + 11, "prev"),
+            (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
+            (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
+        ]
+
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
         # whole window, and a canvas's bindtags already include its toplevel. Binding
@@ -193,6 +211,10 @@ class Hud:
             if self._in_reload(event.x, event.y):        # ⟳ reload control
                 self._reload_feeds()
                 return
+            key = self._media_at(event.x, event.y)     # media glyph zones
+            if key is not None:
+                self._do_media(key)
+                return
             action = self._action_at(event.x, event.y)   # dismiss/mark-all zone wins over open
             if action is not None:
                 self._do_dismiss(action)
@@ -214,6 +236,24 @@ class Hud:
         right edge (a constant box, unlike the per-draw feed hit zones)."""
         x0, y0, x1, y1 = self._reload_box
         return x0 <= x <= x1 and y0 <= y <= y1
+
+    def _media_at(self, x, y):
+        """Return the media-control key at (x, y) among the three fixed glyph
+        zones, or None. Boxes are constants (persistent glyphs), like _reload_box."""
+        for x0, x1, y0, y1, key in self._media_hits:
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return key
+        return None
+
+    def _do_media(self, key):
+        """Dispatch a media-control click to winkit.media (looked up as a module
+        attribute so tests can monkeypatch it)."""
+        if key == "prev":
+            media.prev_track()
+        elif key == "playpause":
+            media.play_pause()
+        elif key == "next":
+            media.next_track()
 
     def _do_dismiss(self, action):
         """Optimistically apply a mark-read action to the rendered tile, then hand
@@ -439,7 +479,7 @@ class Hud:
         self._feed_items = []
         self._hit = []
         self._action_hits = []
-        y = PAD + 4 * ROW_H + 4
+        y = PAD + 5 * ROW_H + 4
         for title, title_url, color, lines, header_action in self._feed_tiles():
             y += FEED_TITLE_GAP
             tid = c.create_text(PAD, y, anchor="w", text=_fit(title),
