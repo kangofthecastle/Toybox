@@ -204,6 +204,7 @@ def _read_impl():
     props = ctypes.c_void_p()
     title_h = ctypes.c_void_p()
     artist_h = ctypes.c_void_p()
+    albumartist_h = ctypes.c_void_p()
     try:
         iid = _guid(_IID_MANAGER_STATICS)
         if combase.RoGetActivationFactory(
@@ -221,42 +222,54 @@ def _read_impl():
         if _vcall(manager, 6, ctypes.byref(session)) != 0 or not session.value:
             return None            # no active session -> nothing playing
 
-        if _vcall(session, 7, ctypes.byref(timeline)) == 0 and timeline.value:
-            start_s = _timespan_s(timeline, 6)
-            end_s = _timespan_s(timeline, 7)
-            position_s = _timespan_s(timeline, 10)
-        else:
-            start_s = end_s = position_s = 0.0
-        duration_s = end_s - start_s if end_s > start_s else 0.0
-        position_s = max(0.0, position_s - start_s)
+        # Session vtable (after IUnknown+IInspectable = slots 0-5):
+        #   6 get_SourceAppUserModelId, 7 TryGetMediaPropertiesAsync,
+        #   8 GetTimelineProperties, 9 GetPlaybackInfo.
+        # Slots verified against a live SMTC session -- a wrong slot here
+        # access-violates (which read()'s blanket except then hides as None),
+        # so these cannot be unit-tested without real playback.
 
-        status = "stopped"
-        if _vcall(session, 8, ctypes.byref(playback)) == 0 and playback.value:
-            pstatus = ctypes.c_int(0)
-            if _vcall(playback, 7, ctypes.byref(pstatus)) == 0:
-                if pstatus.value == _STATUS_PLAYING:
-                    status = "playing"
-                elif pstatus.value == _STATUS_PAUSED:
-                    status = "paused"
-
+        # Media properties FIRST (title/artist), so a source that publishes no
+        # timeline still yields the track.
         title = artist = ""
         mop = ctypes.c_void_p()
-        if _vcall(session, 6, ctypes.byref(mop)) == 0 and mop.value:
+        if _vcall(session, 7, ctypes.byref(mop)) == 0 and mop.value:
             try:
                 props = _await(mop, time.monotonic() + 1.0)
             finally:
                 _release(mop)
             if props and props.value:
-                if _vcall(props, 6, ctypes.byref(title_h)) == 0:
+                if _vcall(props, 6, ctypes.byref(title_h)) == 0:            # get_Title
                     title = _hstring_to_str(combase, title_h)
-                if _vcall(props, 8, ctypes.byref(artist_h)) == 0:
+                if _vcall(props, 8, ctypes.byref(artist_h)) == 0:           # get_Artist
                     artist = _hstring_to_str(combase, artist_h)
+                if not artist and _vcall(props, 9, ctypes.byref(albumartist_h)) == 0:
+                    artist = _hstring_to_str(combase, albumartist_h)        # AlbumArtist fallback
+
+        # Timeline (start/end/position). Many sources (e.g. foobar2000) report
+        # all zeros; duration_s == 0 then means "no seekable timeline".
+        start_s = end_s = position_s = 0.0
+        if _vcall(session, 8, ctypes.byref(timeline)) == 0 and timeline.value:
+            start_s = _timespan_s(timeline, 6)      # get_StartTime
+            end_s = _timespan_s(timeline, 7)        # get_EndTime
+            position_s = _timespan_s(timeline, 10)  # get_Position
+        duration_s = end_s - start_s if end_s > start_s else 0.0
+        position_s = max(0.0, position_s - start_s)
+
+        status = "stopped"
+        if _vcall(session, 9, ctypes.byref(playback)) == 0 and playback.value:
+            pstatus = ctypes.c_int(0)
+            if _vcall(playback, 7, ctypes.byref(pstatus)) == 0:            # get_PlaybackStatus
+                if pstatus.value == _STATUS_PLAYING:
+                    status = "playing"
+                elif pstatus.value == _STATUS_PAUSED:
+                    status = "paused"
 
         return NowPlaying(title, artist, status, position_s, duration_s,
                           time.monotonic())
     finally:
         combase.WindowsDeleteString(cls)
-        for h in (title_h, artist_h):
+        for h in (title_h, artist_h, albumartist_h):
             try:
                 combase.WindowsDeleteString(h)
             except Exception:
