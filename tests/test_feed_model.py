@@ -213,7 +213,7 @@ class TestNormalizeFeed(unittest.TestCase):
         self.assertEqual(f["interval"], 300)            # floored
 
     def test_unknown_type_invalid_but_titled(self):
-        f = model.normalize_feed({"type": "weather", "title": "Sky"})
+        f = model.normalize_feed({"type": "podcast", "title": "Sky"})
         self.assertFalse(f["valid"])
         self.assertIn("unknown type", f["error"])
         self.assertEqual(f["title"], "Sky")
@@ -467,6 +467,91 @@ class TestDueFeeds(unittest.TestCase):
     def test_invalid_feeds_skipped(self):
         feeds = [{"valid": False, "error": "x"}, self._valid(300)]
         self.assertEqual(model.due_feeds(feeds, {}, 10.0), [1])
+
+
+class TestWeatherModel(unittest.TestCase):
+    def test_weather_is_news_type_and_valid_type(self):
+        self.assertTrue(model.is_news_type("weather"))
+        self.assertIn("weather", model._VALID_TYPES)
+
+    def test_geocode_url(self):
+        self.assertEqual(
+            model.openmeteo_geocode_url("Boston"),
+            "https://geocoding-api.open-meteo.com/v1/search?name=Boston"
+            "&count=1&language=en&format=json")
+
+    def test_geocode_url_encodes_city(self):
+        self.assertIn("name=New%20York", model.openmeteo_geocode_url("New York"))
+
+    def test_forecast_url_today_is_one_day(self):
+        u = model.openmeteo_forecast_url(42.36, -71.06, "fahrenheit", "today")
+        self.assertIn("latitude=42.36", u)
+        self.assertIn("longitude=-71.06", u)
+        self.assertIn("temperature_unit=fahrenheit", u)
+        self.assertIn("forecast_days=1", u)
+        self.assertIn("current=temperature_2m", u)
+        self.assertIn("hourly=temperature_2m", u)
+        self.assertIn("daily=temperature_2m_max,temperature_2m_min", u)
+        self.assertIn("timezone=auto", u)
+
+    def test_forecast_url_ranges_map_to_days(self):
+        self.assertIn("forecast_days=3",
+                      model.openmeteo_forecast_url(1.0, 2.0, "celsius", "3d"))
+        self.assertIn("forecast_days=7",
+                      model.openmeteo_forecast_url(1.0, 2.0, "celsius", "7d"))
+
+    def test_forecast_url_unknown_range_defaults_today(self):
+        self.assertIn("forecast_days=1",
+                      model.openmeteo_forecast_url(1.0, 2.0, "celsius", "zzz"))
+
+    def test_forecast_url_unknown_units_defaults_fahrenheit(self):
+        self.assertIn("temperature_unit=fahrenheit",
+                      model.openmeteo_forecast_url(1.0, 2.0, "kelvin", "today"))
+
+    def test_weather_shape(self):
+        w = model.Weather(72.0, 78.0, 61.0, [70.0, 72.0], "°F")
+        self.assertEqual(w._fields, ("current", "hi", "lo", "series", "unit"))
+
+    def test_format_weather_line_rounds(self):
+        w = model.Weather(72.4, 78.6, 61.2, [70.0, 72.0], "°F")
+        self.assertEqual(model.format_weather_line(w),
+                         "72°  H 79°  L 61°")
+
+    def test_normalize_minimal_valid(self):
+        f = model.normalize_feed({"type": "weather", "city": "Boston", "tab": "global"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["city"], "Boston")
+        self.assertEqual(f["units"], "fahrenheit")   # default
+        self.assertEqual(f["range"], "today")        # default
+        self.assertEqual(f["interval"], 1800)        # default
+        self.assertEqual(f["title"], "Weather")      # default title
+        self.assertEqual(f["tab"], "global")
+
+    def test_normalize_units_and_range_coerce(self):
+        f = model.normalize_feed({"type": "weather", "city": "X",
+                                  "units": "celsius", "range": "7d"})
+        self.assertEqual(f["units"], "celsius")
+        self.assertEqual(f["range"], "7d")
+
+    def test_normalize_bad_units_and_range_default(self):
+        f = model.normalize_feed({"type": "weather", "city": "X",
+                                  "units": "kelvin", "range": "10y"})
+        self.assertEqual(f["units"], "fahrenheit")
+        self.assertEqual(f["range"], "today")
+
+    def test_normalize_missing_city_invalid(self):
+        f = model.normalize_feed({"type": "weather", "city": "  "})
+        self.assertFalse(f["valid"])
+        self.assertIn("city", f["error"])
+        self.assertEqual(f["title"], "Weather")
+
+    def test_normalize_interval_floor_600(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "weather", "city": "X", "interval": 5})["interval"], 600)
+
+    def test_normalize_default_tab_global(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "weather", "city": "X"})["tab"], "global")
 
 
 if __name__ == "__main__":
