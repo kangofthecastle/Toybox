@@ -51,6 +51,7 @@ class TestHudFeedRendering(_HudTestBase):
         try:
             hud.feed_state[0] = manager.FeedResult(
                 "ok", [Item("Hello headline", "https://example.com/a")], None, None)
+            hud.active_tab = "global"  # rss without explicit tab defaults to global
             hud._draw_feeds()
             root.update_idletasks()
             height = int(root.geometry().split("x")[1].split("+")[0])
@@ -61,8 +62,10 @@ class TestHudFeedRendering(_HudTestBase):
             root.destroy()
 
     def test_invalid_feed_renders_error_tile(self):
-        root, hud = self._make_hud([{"type": "bogus", "title": "Bad"}])
+        # invalid rss (missing url) is a news-type feed with tab="global"
+        root, hud = self._make_hud([{"type": "rss", "title": "Bad"}])
         try:
+            hud.active_tab = "global"  # rss without explicit tab defaults to global
             hud._draw_feeds()
             root.update_idletasks()
             self.assertTrue(hud._feed_has_text("Bad"))
@@ -96,6 +99,7 @@ class TestHudClickAndMenu(_HudTestBase):
         try:
             hud.feed_state[0] = manager.FeedResult(
                 "ok", [Item("Headline", "https://example.com/a")], None, None)
+            hud.active_tab = "global"  # rss without explicit tab defaults to global
             hud._draw_feeds()
             root.update_idletasks()
             y0, y1, url = hud._hit[0]
@@ -153,24 +157,6 @@ class TestHudClickAndMenu(_HudTestBase):
             texts = [hud.canvas.itemcget(i, "text") for i in hud.canvas.find_all()
                      if hud.canvas.type(i) == "text"]
             self.assertIn("⟳", texts)                    # visible reload control
-            hud.close()
-        finally:
-            root.destroy()
-
-    def test_reload_control_click_reloads(self):
-        class _Ev:
-            def __init__(self, x, y):
-                self.x, self.y = x, y
-        root, hud = self._make_hud([])
-        try:
-            calls = []
-            hud._reload_feeds = lambda: calls.append(1)
-            hud._moved = False
-            x0, y0, x1, y1 = hud._reload_box
-            hud._on_release(_Ev((x0 + x1) // 2, (y0 + y1) // 2))
-            self.assertEqual(calls, [1])                 # clicking the ⟳ reloads
-            hud._on_release(_Ev(2, (y0 + y1) // 2))      # click far-left: no reload
-            self.assertEqual(calls, [1])
             hud.close()
         finally:
             root.destroy()
@@ -299,10 +285,14 @@ class TestFeedSettings(_HudTestBase):
 
 
 def _fill_of(hud, needle):
-    """Fill color of the first feed canvas item whose text contains needle."""
+    """Fill color of the first feed canvas item whose text contains needle.
+    Non-text items (e.g. chart polylines) are silently skipped."""
     for iid in hud._feed_items:
-        if needle in hud.canvas.itemcget(iid, "text"):
-            return hud.canvas.itemcget(iid, "fill")
+        try:
+            if needle in hud.canvas.itemcget(iid, "text"):
+                return hud.canvas.itemcget(iid, "fill")
+        except Exception:
+            pass
     return None
 
 
@@ -594,7 +584,10 @@ class TestHudSearchRendering(_HudTestBase):
             hud._draw_feeds(); root.update_idletasks()
             self.assertTrue(any(u == "https://github.com/o/app/pull/34"
                                 for (_, _, u) in hud._hit))
-            self.assertEqual(hud._action_hits, [])              # search rows have no ✕
+            # search rows have no ✕; tab bar adds tab/refresh zones so check for absence
+            # of per-item dismiss ("one"/"all") actions specifically
+            self.assertFalse(any(a[0] in ("one", "all")
+                                 for (_, _, _, _, a) in hud._action_hits))
         finally:
             hud.close(); root.destroy()
 
@@ -701,6 +694,212 @@ class TestHudMediaRow(_HudTestBase):
                     hud._moved = False
                     hud._on_release(ev)
             self.assertEqual(calls, ["prev", "playpause", "next"])
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudStocks(_HudTestBase):
+    FEED = {"type": "stocks", "title": "Markets", "symbols": ["SPY", "META"],
+            "range": "1mo", "tab": "markets"}
+
+    def _q(self, symbol="SPY", price=746.77, change=-1.3, series=(740.0, 745.0, 746.77)):
+        from feedkit.model import Quote
+        return Quote(symbol, price, change, list(series))
+
+    def test_tile_renders_quote_chart_and_toggle(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            hud.feed_state[0] = manager.FeedResult("ok", [self._q()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("SPY"))                       # quote line
+            self.assertTrue(hud._feed_has_text("1M"))                        # toggle labels
+            self.assertTrue(hud._feed_has_text("3M"))
+            self.assertTrue(any(hud.canvas.type(i) == "line" for i in hud._feed_items))  # chart polyline
+            self.assertTrue(any(u == "https://finance.yahoo.com/quote/SPY" for (_, _, u) in hud._hit))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_up_and_down_colors(self):
+        import feedkit.manager as manager, hud as hudmod
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [self._q(symbol="DN", change=-1.3), self._q(symbol="UP", change=0.5)], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "DN"), hudmod.STOCK_DOWN)
+            self.assertEqual(_fill_of(hud, "UP"), hudmod.STOCK_UP)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_range_toggle_click_calls_set_stock_range(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            calls = []
+            hud.manager.set_stock_range = lambda idx, code: calls.append((idx, code))
+            hud.feed_state[0] = manager.FeedResult("ok", [self._q()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            hit = None
+            for (y0, y1, x0, x1, a) in hud._action_hits:
+                if a == ("range", 0, "1d"):
+                    hit = (y0, y1, x0, x1); break
+            self.assertIsNotNone(hit, "no 1D range zone")
+            y0, y1, x0, x1 = hit
+            ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+            hud._moved = False; hud._on_release(ev)
+            self.assertEqual(calls, [(0, "1d")])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_loading_placeholder_when_no_quotes(self):
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            hud._draw_feeds(); root.update_idletasks()          # feed_state[0] is None
+            self.assertTrue(hud._feed_has_text("loading"))
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudTabs(_HudTestBase):
+    def _feeds(self):
+        return [
+            {"type": "rss", "url": "https://t", "title": "TechFeed", "tab": "tech"},
+            {"type": "rss", "url": "https://g", "title": "GlobalFeed", "tab": "global"},
+            {"type": "github", "repo": "o/r", "title": "Repo"},
+        ]
+
+    def _click(self, hud, pred):
+        for (y0, y1, x0, x1, a) in hud._action_hits:
+            if pred(a):
+                ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+                hud._moved = False
+                hud._on_release(ev)
+                return a
+        return None
+
+    def test_four_tab_labels_render(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._draw_feeds(); root.update_idletasks()
+            for label in ("Global", "Markets", "Tech", "Sports"):
+                self.assertTrue(hud._feed_has_text(label), label)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_only_active_tab_feeds_drawn_github_always(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item, Status
+        root, hud = self._make_hud(self._feeds())
+        try:
+            hud.feed_state[0] = manager.FeedResult("ok", [Item("techline", "https://x/t")], None, None)
+            hud.feed_state[1] = manager.FeedResult("ok", [Item("globalline", "https://x/g")], None, None)
+            hud.feed_state[2] = manager.FeedResult("ok", [], Status("Repo passing", "success",
+                                                                    "https://github.com/o/r/actions"), None)
+            hud.active_tab = "tech"
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("TechFeed"))
+            self.assertFalse(hud._feed_has_text("GlobalFeed"))   # other tab hidden
+            self.assertTrue(hud._feed_has_text("Repo"))          # github always
+        finally:
+            hud.close(); root.destroy()
+
+    def test_default_tab_selects_initial_tab(self):
+        import tkinter as tk
+        import config, hud as hudmod
+        root = tk.Tk(); root.overrideredirect(True)
+        cfg = config.defaults(); cfg["feeds"] = []
+        cfg["hud"]["default_tab"] = "markets"
+        root.geometry("%dx%d+100+100" % (hudmod.WIDTH, hudmod.HEIGHT))
+        hud = hudmod.Hud(root, cfg)
+        try:
+            self.assertEqual(hud.active_tab, "markets")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_tab_click_changes_active_tab_no_refetch(self):
+        root, hud = self._make_hud(self._feeds())
+        try:
+            hud.active_tab = "tech"
+            calls = []
+            hud.manager.refresh = lambda idxs: calls.append(list(idxs))
+            hud._draw_feeds(); root.update_idletasks()
+            self._click(hud, lambda a: a == ("tab", "global"))
+            self.assertEqual(hud.active_tab, "global")
+            self.assertEqual(calls, [])                          # switching does not refetch
+            self.assertTrue(hud._feed_has_text("GlobalFeed"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_news_refresh_calls_manager_refresh_with_news_indices(self):
+        root, hud = self._make_hud(self._feeds())
+        try:
+            calls = []
+            hud.manager.refresh = lambda idxs: calls.append(list(idxs))
+            hud._draw_feeds(); root.update_idletasks()
+            self._click(hud, lambda a: a == ("refresh", "news"))
+            self.assertEqual(calls, [[0, 1]])                    # the two rss feeds
+        finally:
+            hud.close(); root.destroy()
+
+    def test_github_refresh_rereads_token_and_refreshes_github(self):
+        import config
+        root, hud = self._make_hud(self._feeds(), isolate_cfg=True)
+        try:
+            seed = config.defaults(); seed["hud"]["github_token"] = "ghp_new"
+            config.save(hud.CFG_PATH, seed)
+            os.environ.pop("TOYBOX_GITHUB_TOKEN", None)          # ensure cfg wins
+            tok, ref = [], []
+            hud.manager.set_token = lambda t: tok.append(t)
+            hud.manager.refresh = lambda idxs: ref.append(list(idxs))
+            hud._draw_feeds(); root.update_idletasks()
+            self._click(hud, lambda a: a == ("refresh", "github"))
+            self.assertEqual(tok, ["ghp_new"])                  # token re-read from config
+            self.assertEqual(ref, [[2]])                        # the github feed index
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestStockPoints(unittest.TestCase):
+    def test_empty_and_single_return_empty(self):
+        import hud as hudmod
+        self.assertEqual(hudmod._stock_points([], 0, 30, 0, 20), [])
+        self.assertEqual(hudmod._stock_points([5.0], 0, 30, 0, 20), [])
+
+    def test_flat_series_is_midline(self):
+        import hud as hudmod
+        pts = hudmod._stock_points([5.0, 5.0, 5.0], 0, 20, 0, 20)
+        self.assertTrue(all(abs(y - 10.0) < 1e-9 for y in pts[1::2]))
+
+    def test_monotonic_scales_min_bottom_max_top(self):
+        import hud as hudmod
+        pts = hudmod._stock_points([1.0, 2.0, 3.0, 4.0], 0, 30, 0, 20)
+        self.assertEqual(pts[0], 0)      # x_left
+        self.assertEqual(pts[1], 20)     # min -> bottom
+        self.assertEqual(pts[-2], 30)    # x_right
+        self.assertEqual(pts[-1], 0)     # max -> top
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudPartition(_HudTestBase):
+    def test_news_and_github_indices(self):
+        feeds = [
+            {"type": "rss", "url": "https://a", "title": "A", "tab": "tech"},
+            {"type": "github", "repo": "o/r", "title": "R"},
+            {"type": "stocks", "symbols": ["SPY"], "range": "1mo", "tab": "markets"},
+            {"type": "notifications", "title": "N"},
+        ]
+        root, hud = self._make_hud(feeds)
+        try:
+            self.assertEqual(hud._news_indices(), [0, 2])
+            self.assertEqual(hud._github_indices(), [1, 3])
         finally:
             hud.close(); root.destroy()
 
