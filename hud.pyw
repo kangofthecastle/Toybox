@@ -647,6 +647,10 @@ class Hud:
             y += FEED_LINE_H
             pts = _stock_points(q.series, PAD + 6, WIDTH - PAD, y + 2, y + STOCK_CHART_H - 2)
             if pts:
+                bottom = y + STOCK_CHART_H - 2
+                poly = c.create_polygon(*(pts + [pts[-2], bottom, pts[0], bottom]),
+                                        fill=color, stipple="gray25", outline="")
+                self._feed_items.append(poly)
                 ln = c.create_line(*pts, fill=color, width=1)
                 self._feed_items.append(ln)
             self._register_hit(y + STOCK_CHART_H // 2, url)

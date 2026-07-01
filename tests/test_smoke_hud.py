@@ -789,6 +789,21 @@ class TestHudStocks(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_chart_has_filled_polygon(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "markets"
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [self._q(series=(740.0, 745.0, 742.0, 748.0))], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(any(hud.canvas.type(i) == "polygon" for i in hud._feed_items),
+                            "no filled chart polygon")
+            self.assertTrue(any(hud.canvas.type(i) == "line" for i in hud._feed_items),
+                            "line still drawn on top")
+        finally:
+            hud.close(); root.destroy()
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestHudTabs(_HudTestBase):
