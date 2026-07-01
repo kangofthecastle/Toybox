@@ -607,22 +607,31 @@ class Hud:
         if self._marquee is not None and self._marquee["item"] == rec["item"]:
             return
         self._stop_marquee()
-        self._marquee = {"item": rec["item"], "full": rec["full"] + "    ",
-                         "x_start": rec["x_start"], "offset": 0}
+        self.canvas.itemconfig(rec["item"], text=rec["full"])   # full text; window clips overflow
+        budget = self.width - PAD - rec["x_start"]
+        full_w = self._feed_font_measure.measure(rec["full"])
+        self._marquee = {"item": rec["item"], "base_x": rec["x_start"],
+                         "max": max(0, full_w - budget), "offset": 0, "dir": 1, "pause": 0}
         self._marquee_after = self.root.after(400, self._marquee_step)   # brief pause, then scroll
 
     def _marquee_step(self):
         m = self._marquee
         if m is None:
             return
-        s = m["full"]
-        view = s[m["offset"]:] + s[:m["offset"]]
         try:
-            self.canvas.itemconfig(m["item"], text=self._fit_px(view, m["x_start"]))
+            if m["pause"] > 0:
+                m["pause"] -= 1
+            else:
+                m["offset"] += m["dir"] * 2
+                if m["offset"] >= m["max"]:
+                    m["offset"] = m["max"]; m["dir"] = -1; m["pause"] = 12
+                elif m["offset"] <= 0:
+                    m["offset"] = 0; m["dir"] = 1; m["pause"] = 12
+            y = self.canvas.coords(m["item"])[1]
+            self.canvas.coords(m["item"], m["base_x"] - m["offset"], y)
         except tk.TclError:
             self._stop_marquee(); return
-        m["offset"] = (m["offset"] + 1) % len(s)
-        self._marquee_after = self.root.after(110, self._marquee_step)
+        self._marquee_after = self.root.after(33, self._marquee_step)
 
     def _stop_marquee(self):
         if self._marquee_after is not None:
@@ -635,6 +644,8 @@ class Hud:
             rec = next((r for r in self._scroll_lines if r["item"] == self._marquee["item"]), None)
             if rec is not None:
                 try:
+                    y = self.canvas.coords(rec["item"])[1]
+                    self.canvas.coords(rec["item"], rec["x_start"], y)
                     self.canvas.itemconfig(rec["item"], text=self._fit_px(rec["full"], rec["x_start"]))
                 except tk.TclError:
                     pass

@@ -1208,33 +1208,38 @@ class TestHudMarquee(_HudTestBase):
                 root.after_cancel(hud._drain_after)
             hud.close(); root.destroy()
 
-    def test_hover_truncated_line_starts_and_animates_marquee(self):
+    def test_hover_truncated_line_scrolls_by_pixels(self):
         root, hud = self._make_hud(self._long_feed())
         try:
             self._draw_long(hud, root)
             self.assertTrue(hud._scroll_lines, "expected a truncated (scrollable) line")
             rec = hud._scroll_lines[0]
-            before = hud.canvas.itemcget(rec["item"], "text")
             hud._on_motion(self._evt(60, (rec["y0"] + rec["y1"]) // 2))
             self.assertIsNotNone(hud._marquee)
-            hud._marquee_step(); hud._marquee_step()
-            after = hud.canvas.itemcget(rec["item"], "text")
-            self.assertNotEqual(before, after)                  # text scrolled
+            self.assertEqual(hud.canvas.itemcget(rec["item"], "text"), rec["full"])   # full text shown
+            x_before = hud.canvas.coords(rec["item"])[0]
+            for _ in range(4):
+                hud._marquee_step()
+            x_after = hud.canvas.coords(rec["item"])[0]
+            self.assertLess(x_after, x_before)              # scrolled left by pixels
         finally:
             hud._stop_marquee()
             hud.close(); root.destroy()
 
-    def test_leave_stops_marquee_and_restores_text(self):
+    def test_leave_stops_marquee_and_restores(self):
         root, hud = self._make_hud(self._long_feed())
         try:
             self._draw_long(hud, root)
             rec = hud._scroll_lines[0]
             truncated = hud.canvas.itemcget(rec["item"], "text")
+            base_x = hud.canvas.coords(rec["item"])[0]
             hud._on_motion(self._evt(60, (rec["y0"] + rec["y1"]) // 2))
-            hud._marquee_step()
+            for _ in range(4):
+                hud._marquee_step()
             hud._on_leave(self._evt(0, 0))
             self.assertIsNone(hud._marquee)
-            self.assertEqual(hud.canvas.itemcget(rec["item"], "text"), truncated)   # restored
+            self.assertEqual(hud.canvas.itemcget(rec["item"], "text"), truncated)   # text restored
+            self.assertAlmostEqual(hud.canvas.coords(rec["item"])[0], base_x, delta=0.5)  # x restored
         finally:
             hud.close(); root.destroy()
 
