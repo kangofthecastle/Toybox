@@ -6,7 +6,8 @@ import os
 import tempfile
 
 DEFAULTS = {
-    "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False, "github_token": ""},
+    "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False, "github_token": "",
+            "schedule": {"path": ""}},
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True, "layout": "columns"},
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
