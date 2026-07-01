@@ -154,7 +154,7 @@ NEWS_TABS = (("global", "Global"), ("markets", "Markets"),
              ("tech", "Tech"), ("sports", "Sports"))
 DEFAULT_TAB = "tech"
 _TAB_KEYS = frozenset(k for k, _ in NEWS_TABS)
-_NEWS_TYPES = ("rss", "json", "text", "stocks", "weather")
+_NEWS_TYPES = ("rss", "json", "text", "stocks")   # weather is its own always-shown section
 _PINNED_TYPES = ("github", "notifications", "search")
 
 
@@ -169,7 +169,8 @@ def coerce_default_tab(value):
 
 
 def is_news_type(t):
-    """True for tabbed news feed types (rss/json/text/stocks/weather)."""
+    """True for tabbed news feed types (rss/json/text/stocks). Weather is drawn
+    in its own always-shown section, so it is deliberately NOT a news type."""
     return t in _NEWS_TYPES
 
 

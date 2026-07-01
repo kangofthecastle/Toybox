@@ -470,8 +470,8 @@ class TestDueFeeds(unittest.TestCase):
 
 
 class TestWeatherModel(unittest.TestCase):
-    def test_weather_is_news_type_and_valid_type(self):
-        self.assertTrue(model.is_news_type("weather"))
+    def test_weather_is_not_news_type_but_is_valid(self):
+        self.assertFalse(model.is_news_type("weather"))   # always-shown, not tab-scoped
         self.assertIn("weather", model._VALID_TYPES)
 
     def test_geocode_url(self):
@@ -525,7 +525,7 @@ class TestWeatherModel(unittest.TestCase):
         self.assertEqual(f["range"], "today")        # default
         self.assertEqual(f["interval"], 1800)        # default
         self.assertEqual(f["title"], "Weather")      # default title
-        self.assertEqual(f["tab"], "global")
+        self.assertNotIn("tab", f)                   # always-shown, not tab-scoped
 
     def test_normalize_units_and_range_coerce(self):
         f = model.normalize_feed({"type": "weather", "city": "X",
@@ -549,9 +549,11 @@ class TestWeatherModel(unittest.TestCase):
         self.assertEqual(model.normalize_feed(
             {"type": "weather", "city": "X", "interval": 5})["interval"], 600)
 
-    def test_normalize_default_tab_global(self):
-        self.assertEqual(model.normalize_feed(
-            {"type": "weather", "city": "X"})["tab"], "global")
+    def test_normalize_weather_has_no_tab(self):
+        # weather is always-shown, not tab-scoped, so it carries no tab key.
+        f = model.normalize_feed({"type": "weather", "city": "X"})
+        self.assertTrue(f["valid"])
+        self.assertNotIn("tab", f)
 
 
 class TestParseSymbols(unittest.TestCase):

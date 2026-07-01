@@ -619,6 +619,12 @@ class Hud:
         return [i for i, f in enumerate(self.manager.feeds)
                 if feedmodel.is_pinned_type(f.get("type"))]
 
+    def _weather_indices(self):
+        """Indices of weather feeds -- always shown in their own section above the
+        tabs, never tab-scoped."""
+        return [i for i, f in enumerate(self.manager.feeds)
+                if f.get("type") == "weather"]
+
     def _drain_feeds(self):
         self._drain_after = None
         changed = False
@@ -998,6 +1004,8 @@ class Hud:
         self._hover_rect = None
         y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H    # below the header rows + reserved now-playing band
         y = self._draw_schedule_tile(y)   # pinned "now" tile, above the tab bar
+        for idx in self._weather_indices():   # weather: always shown, own tile (not tab-scoped)
+            y = self._draw_tile(idx, self.manager.feeds[idx], y)
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
                 if self.manager.feeds[i].get("tab") == self.active_tab]

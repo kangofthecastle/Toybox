@@ -1705,6 +1705,18 @@ class TestHudWeather(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_weather_shown_regardless_of_active_tab(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "tech"                 # NOT the feed's old 'global' tab
+            hud.feed_state[0] = manager.FeedResult("ok", [self._w()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Weather"))    # still shown
+            self.assertTrue(hud._feed_has_text("H 78°"))
+        finally:
+            hud.close(); root.destroy()
+
     def test_range_toggle_click_calls_set_weather_range(self):
         import feedkit.manager as manager
         root, hud = self._make_hud([self.FEED])
