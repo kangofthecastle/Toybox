@@ -147,6 +147,34 @@ class TestHudClickAndMenu(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_reload_glyph_rendered(self):
+        root, hud = self._make_hud([])
+        try:
+            texts = [hud.canvas.itemcget(i, "text") for i in hud.canvas.find_all()
+                     if hud.canvas.type(i) == "text"]
+            self.assertIn("⟳", texts)                    # visible reload control
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_reload_control_click_reloads(self):
+        class _Ev:
+            def __init__(self, x, y):
+                self.x, self.y = x, y
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._reload_feeds = lambda: calls.append(1)
+            hud._moved = False
+            x0, y0, x1, y1 = hud._reload_box
+            hud._on_release(_Ev((x0 + x1) // 2, (y0 + y1) // 2))
+            self.assertEqual(calls, [1])                 # clicking the ⟳ reloads
+            hud._on_release(_Ev(2, (y0 + y1) // 2))      # click far-left: no reload
+            self.assertEqual(calls, [1])
+            hud.close()
+        finally:
+            root.destroy()
+
     def test_open_at_rechecks_scheme_on_planted_hit(self):
         root, hud = self._make_hud([{"type": "rss", "url": "https://x", "title": "X"}])
         try:
