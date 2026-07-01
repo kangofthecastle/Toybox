@@ -8,6 +8,7 @@ import winkit.startup as startup
 startup.guard_streams()  # MUST be the first executable statement (pythonw-at-login safety)
 
 import collections
+import threading
 import time
 
 import tkinter as tk
@@ -16,6 +17,7 @@ import tkinter.messagebox as tkmsg
 import winkit.window as window
 import winkit.metrics as metrics
 import winkit.media as media
+import winkit.nowplaying as nowplaying
 import winkit.diskinfo as diskinfo
 import config
 import webbrowser
@@ -29,7 +31,9 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-HEIGHT = 156          # 6 header rows (CPU/RAM/GPU/disk/media/clock) + margin
+NOWPLAYING_H = 20      # reserved band under the media row: title line + progress bar
+NP_BAR_H = 3           # progress-bar thickness (px)
+HEIGHT = 156 + NOWPLAYING_H   # 6 header rows + reserved now-playing band + margin
 WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
 ROW_H = 22
@@ -53,6 +57,9 @@ MEDIA_FONT = ("Segoe UI Symbol", 12)
 MEDIA_PREV = "⏮"
 MEDIA_PLAY = "⏯"
 MEDIA_NEXT = "⏭"
+NP_TITLE_FONT = ("Consolas", 9)
+NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
+NP_POLL_S = 2.5        # background SMTC read interval (seconds)
 
 FEED_FONT = ("Consolas", 9)
 FEED_TITLE_FONT = ("Consolas", 9, "bold")
@@ -170,7 +177,7 @@ class Hud:
         y2 = PAD + ROW_H + ROW_H // 2
         ygpu = PAD + 2 * ROW_H + ROW_H // 2
         ydisk = PAD + 3 * ROW_H + ROW_H // 2     # disk row: row 4 (after GPU)
-        y3 = PAD + 5 * ROW_H + ROW_H // 2        # clock + expand: row 6 (under the media controls)
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, shifted below the now-playing band
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
@@ -198,6 +205,23 @@ class Hud:
             (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
         ]
+
+        # Now-playing band: reserved directly below the media row so the header
+        # never jumps when playback starts/stops.
+        np_top = ymedia + ROW_H // 2                 # bottom edge of the media row band
+        self._np_bar_y = np_top + NOWPLAYING_H - NP_BAR_H - 1
+        self._np_title = c.create_text(self.width // 2, np_top + 6, anchor="center",
+                                       text="", fill=DIM, font=NP_TITLE_FONT)
+        self._np_bar_bg = c.create_rectangle(PAD, self._np_bar_y, self.width - PAD,
+                                             self._np_bar_y + NP_BAR_H,
+                                             fill=NP_TRACK, outline="")
+        self._np_bar = c.create_rectangle(PAD, self._np_bar_y, PAD,
+                                          self._np_bar_y + NP_BAR_H,
+                                          fill=ACCENT, outline="")
+        self._np_lock = threading.Lock()
+        self._np_latest = None                       # NowPlaying or None (poll thread writes)
+        self._np_stop = threading.Event()
+        self._np_thread = None
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
@@ -230,6 +254,7 @@ class Hud:
         self._draw_feeds()
         if not _smoke_ms():
             self.manager.start()   # no worker / no network under smoke launches
+            self._start_nowplaying()
         self.tick()
         self._drain_after = self.root.after(250, self._drain_feeds)
 
@@ -372,6 +397,7 @@ class Hud:
             self.disk = diskinfo.usage()
             self._disk_at = now
         self._draw()
+        self._draw_nowplaying()
         self.root.after(1000, self.tick)
 
     def _draw(self):
@@ -405,6 +431,50 @@ class Hud:
             pts.extend((x0 + i * step, bottom - frac * height))
         self.canvas.coords(line_id, *pts)
         self.canvas.itemconfig(line_id, state="normal")
+
+    # --- now playing ------------------------------------------------------
+    def _start_nowplaying(self):
+        """Spawn the daemon that polls SMTC every NP_POLL_S and stores the latest
+        sample under a lock. It waits one interval before the first read so a
+        just-constructed HUD (and the tests) see a stable None until then."""
+        def _loop():
+            while not self._np_stop.wait(NP_POLL_S):
+                try:
+                    s = nowplaying.read()
+                except Exception:
+                    s = None
+                with self._np_lock:
+                    self._np_latest = s
+        self._np_thread = threading.Thread(target=_loop, name="nowplaying",
+                                            daemon=True)
+        self._np_thread.start()
+
+    def _draw_nowplaying(self):
+        """Update the title line + progress bar from the latest SMTC sample,
+        advancing the position with wall-clock so the bar moves smoothly between
+        reads. Blank when nothing is playing. Never raises."""
+        c = self.canvas
+        with self._np_lock:
+            s = self._np_latest
+        left = PAD
+        right = self.width - PAD
+        y0, y1 = self._np_bar_y, self._np_bar_y + NP_BAR_H
+        if s is None or s.status == "stopped":
+            try:
+                c.itemconfig(self._np_title, text="")
+                c.coords(self._np_bar, left, y0, left, y1)   # zero width => blank
+            except tk.TclError:
+                pass
+            return
+        try:
+            text = nowplaying.format_track(s.title, s.artist)
+            c.itemconfig(self._np_title, text=self._fit_px(text, PAD) if text else "")
+            pos = nowplaying.advance(s.position_s, time.monotonic() - s.sampled_at,
+                                     s.status)
+            frac = nowplaying.progress_fraction(pos, s.duration_s)
+            c.coords(self._np_bar, left, y0, left + int((right - left) * frac), y1)
+        except tk.TclError:
+            pass
 
     # --- feeds ------------------------------------------------------------
     def _github_token(self):
@@ -715,7 +785,7 @@ class Hud:
             c.delete(self._hover_item)
             self._hover_item = None
         self._hover_rect = None
-        y = PAD + 6 * ROW_H + 4                   # below the 6-row header (CPU/RAM/GPU/disk/media/clock)
+        y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H    # below the header rows + reserved now-playing band
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
                 if self.manager.feeds[i].get("tab") == self.active_tab]
@@ -850,6 +920,7 @@ class Hud:
                 pass
             self._drain_after = None
         self._stop_marquee()
+        self._np_stop.set()
         try:
             self.manager.stop()
         except Exception:
@@ -885,6 +956,8 @@ class Hud:
         c = self.canvas
         cx = self.width // 2
         c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
+        c.coords(self._np_title, cx, self.canvas.coords(self._np_title)[1])
+        c.coords(self._np_bar_bg, PAD, self._np_bar_y, self.width - PAD, self._np_bar_y + NP_BAR_H)
         ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media row 5 (above clock)
         gap = 44
         c.coords(self._media_prev, cx - gap, ymedia)
@@ -896,7 +969,7 @@ class Hud:
             (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
         ]
-        y3 = PAD + 5 * ROW_H + ROW_H // 2        # clock + expand row 6 (under media)
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, below the now-playing band
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
 

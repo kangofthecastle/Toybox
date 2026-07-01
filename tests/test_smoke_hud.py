@@ -1473,5 +1473,90 @@ class TestHudDiskRow(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNowPlaying(_HudTestBase):
+    def _sample(self, title="Song", artist="Artist", status="playing",
+                position_s=30.0, duration_s=120.0):
+        import time
+        import winkit.nowplaying as nowplaying
+        return nowplaying.NowPlaying(title, artist, status, position_s,
+                                     duration_s, time.monotonic())
+
+    def test_np_items_exist_and_blank_initially(self):
+        root, hud = self._make_hud([])
+        try:
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "text"), "")
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._np_bar)
+            self.assertEqual(x0, x1)                       # zero width => blank
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_renders_title_and_bar_when_playing(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=60.0, duration_s=120.0)
+            hud._draw_nowplaying()
+            text = hud.canvas.itemcget(hud._np_title, "text")
+            self.assertIn("Song", text)
+            self.assertIn("Artist", text)
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._np_bar)
+            self.assertGreater(x1 - x0, 0)                 # filled to ~half
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar, "fill"), hudmod.ACCENT)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_blank_when_stopped(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(status="stopped")
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "text"), "")
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._np_bar)
+            self.assertEqual(x0, x1)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_layout_reserved_and_stable_across_playback(self):
+        root, hud = self._make_hud([])
+        try:
+            clock_y = hud.canvas.coords(hud._clock_text)[1]
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            np_y = hud.canvas.coords(hud._np_title)[1]
+            self.assertLess(media_y, np_y)                 # now-playing below media
+            self.assertLess(np_y, clock_y)                 # ...and above the clock
+            with hud._np_lock:
+                hud._np_latest = self._sample()
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.coords(hud._clock_text)[1], clock_y)  # no jump
+            with hud._np_lock:
+                hud._np_latest = None
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.coords(hud._clock_text)[1], clock_y)  # still no jump
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_recenters_when_widened(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._toggle_width(); root.update_idletasks()
+            self.assertEqual(hud.canvas.coords(hud._np_title)[0], hudmod.WIDTH_WIDE // 2)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_feeds_start_below_nowplaying_band(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Global"))  # tab bar drew (feeds below np)
+            self.assertLess(hud.canvas.coords(hud._np_title)[1],
+                            hud.canvas.coords(hud._clock_text)[1])
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
