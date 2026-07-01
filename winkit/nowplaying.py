@@ -228,14 +228,18 @@ def seek(position_s):
 
 
 def _change_position(session, ticks):
-    """Call session vtable slot 23 -- TryChangePlaybackPositionAsync(Int64 ticks,
-    out IAsyncOperation<bool>**). The slot follows the same live-anchored ABI as
-    read()'s 6-9 (get_SourceAppUserModelId(6) .. GetPlaybackInfo(9), then the
-    Try* methods run 10..; ChangePlaybackPosition is the 14th Try*). A wrong slot
-    access-violates -- caught by seek()'s blanket except -- so this cannot be
+    """Call session vtable slot 24 -- TryChangePlaybackPositionAsync(Int64 ticks,
+    out IAsyncOperation<bool>**). Slot order verified against Windows.Media.winmd
+    (ECMA-335 metadata): slots 6-9 = get_SourceAppUserModelId / TryGetMediaProperties
+    Async / GetTimelineProperties / GetPlaybackInfo (matching read()'s live anchors),
+    then the Try* methods run 10..24 with ChangePlaybackPosition LAST at slot 24.
+    NB slot 23 is TryChangeShuffleActiveAsync(Boolean) -- ABI-compatible with this
+    call (the Int64 is reinterpreted as its bool arg), so a slot-23 mistake would
+    silently toggle shuffle rather than access-violate, and a ticks-value probe
+    cannot tell the two apart; the metadata is the source of truth. Cannot be
     unit-tested without a seekable session. Returns (hresult, op_pointer)."""
     vtbl = ctypes.cast(session, ctypes.POINTER(ctypes.c_void_p))[0]
-    fn_addr = ctypes.cast(vtbl, ctypes.POINTER(ctypes.c_void_p))[23]
+    fn_addr = ctypes.cast(vtbl, ctypes.POINTER(ctypes.c_void_p))[24]
     proto = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p,
                                ctypes.c_int64, ctypes.c_void_p)
     op = ctypes.c_void_p()
