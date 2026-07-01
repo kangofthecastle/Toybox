@@ -112,6 +112,25 @@ def _stock_points(series, x_left, x_right, top, bottom):
     return pts
 
 
+def edge_for(x, y, w, h, sw, sh, threshold):
+    """Which screen edge a window at (x, y) sized (w, h) on an sw x sh screen is
+    within `threshold` px of, or None. Ties (a corner) resolve to the nearest,
+    scanning left, right, top, bottom so a perfect tie prefers the earlier edge.
+    A window dragged partly off-screen (negative gap) still counts as docked."""
+    gaps = {
+        "left": x,
+        "right": sw - (x + w),
+        "top": y,
+        "bottom": sh - (y + h),
+    }
+    best = None
+    for edge in ("left", "right", "top", "bottom"):
+        gap = gaps[edge]
+        if gap <= threshold and (best is None or gap < gaps[best]):
+            best = edge
+    return best
+
+
 def _repo_short(full):
     """Bare repo name (drop the owner/), capped so a long owner can't push the
     reason label off the right edge of the 220px tile."""

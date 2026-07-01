@@ -1810,5 +1810,54 @@ class TestHudScheduleTile(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudEdgeFor(unittest.TestCase):
+    # screen 1920x1080, window 220x134, threshold 24 px.
+    SW, SH, W, H, T = 1920, 1080, 220, 134, 24
+
+    def test_left_edge(self):
+        import hud as hudmod
+        self.assertEqual(hudmod.edge_for(10, 300, self.W, self.H, self.SW, self.SH, self.T),
+                         "left")
+
+    def test_right_edge(self):
+        import hud as hudmod
+        # x+w = 1910 -> right gap 10; left gap 1690 -> right wins.
+        self.assertEqual(hudmod.edge_for(1690, 300, self.W, self.H, self.SW, self.SH, self.T),
+                         "right")
+
+    def test_top_edge(self):
+        import hud as hudmod
+        self.assertEqual(hudmod.edge_for(800, 10, self.W, self.H, self.SW, self.SH, self.T),
+                         "top")
+
+    def test_bottom_edge(self):
+        import hud as hudmod
+        # y+h = 1064 -> bottom gap 16; top gap 930 -> bottom wins.
+        self.assertEqual(hudmod.edge_for(800, 930, self.W, self.H, self.SW, self.SH, self.T),
+                         "bottom")
+
+    def test_center_is_none(self):
+        import hud as hudmod
+        self.assertIsNone(hudmod.edge_for(800, 500, self.W, self.H, self.SW, self.SH, self.T))
+
+    def test_corner_ties_prefer_left(self):
+        import hud as hudmod
+        # top-left corner: left gap == top gap == 10 -> left wins by fixed order.
+        self.assertEqual(hudmod.edge_for(10, 10, self.W, self.H, self.SW, self.SH, self.T),
+                         "left")
+
+    def test_partly_offscreen_left_still_docks(self):
+        import hud as hudmod
+        # already dragged past the edge (negative x) counts as within threshold.
+        self.assertEqual(hudmod.edge_for(-40, 300, self.W, self.H, self.SW, self.SH, self.T),
+                         "left")
+
+    def test_just_outside_threshold_is_none(self):
+        import hud as hudmod
+        # every gap is 25 (> 24): x=25, right gap 1920-245=1675, y=25, bottom gap 921.
+        self.assertIsNone(hudmod.edge_for(25, 25, self.W, self.H, self.SW, self.SH, self.T))
+
+
 if __name__ == "__main__":
     unittest.main()
