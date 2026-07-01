@@ -27,10 +27,18 @@ class TestHumanBytes(unittest.TestCase):
         # 1023.6 GiB must roll into T, never render a 5-char "1024G".
         self.assertEqual(diskinfo.human_bytes(int(1023.6 * 1024**3)), "1.0T")
 
+    def test_rounding_band_below_1000_rolls_unit(self):
+        # Values in [999.5, 1000) of a unit round UP to 1000 under "%.0f"; they
+        # must roll to the next unit instead of rendering a 5-char "1000X".
+        self.assertEqual(diskinfo.human_bytes(int(999.6 * 1024**3)), "1.0T")
+        self.assertEqual(diskinfo.human_bytes(int(999.9 * 1024**2)), "1.0G")
+        self.assertEqual(diskinfo.human_bytes(int(999.6 * 1024)), "1.0M")
+
     def test_output_never_exceeds_four_chars(self):
         for n in (0, 1, 999, 1023, 1024, 999 * 1024**2, 1023 * 1024**3,
                   int(9.96 * 1024**3), int(1.1 * 1024**4), 5 * 1024**4,
-                  900 * 1024**4):
+                  900 * 1024**4,
+                  int(999.6 * 1024**3), int(999.9 * 1024**2), int(999.6 * 1024)):
             self.assertLessEqual(len(diskinfo.human_bytes(n)), 4, n)
 
 

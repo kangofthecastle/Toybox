@@ -169,7 +169,7 @@ def coerce_default_tab(value):
 
 
 def is_news_type(t):
-    """True for tabbed news feed types (rss/json/text/stocks)."""
+    """True for tabbed news feed types (rss/json/text/stocks/weather)."""
     return t in _NEWS_TYPES
 
 

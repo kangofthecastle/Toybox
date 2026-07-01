@@ -57,14 +57,16 @@ def human_bytes(n):
     output can never exceed four characters. Non-numeric/negative -> '0'."""
     try:
         n = int(n)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return "0"
     if n < 0:
         n = 0
     units = ["", "K", "M", "G", "T", "P"]
     size = float(n)
     idx = 0
-    while size >= 1000 and idx < len(units) - 1:
+    # Roll at >= 999.5, not >= 1000: "%.0f" rounds anything in [999.5, 1000) up
+    # to "1000" (5 chars), so it must move to the next unit first.
+    while size >= 999.5 and idx < len(units) - 1:
         size /= 1024.0
         idx += 1
     unit = units[idx]
