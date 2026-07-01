@@ -93,5 +93,56 @@ class TestReadSmoke(unittest.TestCase):
         nowplaying.read()
 
 
+class TestMarqueeScrollMax(unittest.TestCase):
+    def test_fits_is_zero(self):
+        self.assertEqual(nowplaying.marquee_scroll_max(100, 200), 0)
+
+    def test_exact_fit_is_zero(self):
+        self.assertEqual(nowplaying.marquee_scroll_max(200, 200), 0)
+
+    def test_overflow_is_the_difference(self):
+        self.assertEqual(nowplaying.marquee_scroll_max(260, 200), 60)
+
+    def test_bad_input_is_zero(self):
+        self.assertEqual(nowplaying.marquee_scroll_max(None, None), 0)
+
+
+class TestMarqueeStep(unittest.TestCase):
+    def test_static_when_max_not_positive(self):
+        self.assertEqual(nowplaying.marquee_step(0, 0, 0), (0, 0))
+        self.assertEqual(nowplaying.marquee_step(7, -3, 5), (0, 0))
+
+    def test_advances_by_step_from_start(self):
+        self.assertEqual(nowplaying.marquee_step(0, 100, 0), (2, 0))
+
+    def test_custom_step(self):
+        self.assertEqual(nowplaying.marquee_step(0, 100, 0, step=5), (5, 0))
+
+    def test_clamps_at_end_and_arms_pause(self):
+        self.assertEqual(nowplaying.marquee_step(99, 100, 0), (100, 10))
+
+    def test_pause_counts_down_without_moving(self):
+        self.assertEqual(nowplaying.marquee_step(100, 100, 10), (100, 9))
+
+    def test_wraps_to_start_not_bounce(self):
+        # At the end with the pause elapsed: JUMP to 0 (a bounce would give 98).
+        self.assertEqual(nowplaying.marquee_step(100, 100, 0), (0, 10))
+
+    def test_full_cycle_reaches_end_then_wraps_never_reverses(self):
+        offset, pause, max_off = 0, 0, 20
+        seen = []
+        for _ in range(80):
+            offset, pause = nowplaying.marquee_step(offset, max_off, pause)
+            seen.append(offset)
+        self.assertIn(max_off, seen)                      # scrolled to the end
+        i = seen.index(max_off)
+        j = i
+        while j < len(seen) and seen[j] == max_off:
+            j += 1                                        # skip the brief end pause
+        self.assertLess(j, len(seen), "expected motion after the end pause")
+        self.assertEqual(seen[j], 0)                      # wraps to start (bounce => 18)
+        self.assertTrue(all(o >= 0 for o in seen))        # never runs backwards past 0
+
+
 if __name__ == "__main__":
     unittest.main()

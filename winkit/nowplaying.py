@@ -51,6 +51,33 @@ def format_track(title, artist):
     return t or a
 
 
+def marquee_scroll_max(text_w, budget_w):
+    """Pixels a line must scroll left to reveal its end: max(0, text_w - budget_w).
+    0 means the text fits its budget and should render static (no scrolling)."""
+    try:
+        return max(0, int(text_w) - int(budget_w))
+    except (TypeError, ValueError):
+        return 0
+
+
+def marquee_step(offset, max_off, pause, step=2, end_pause=10):
+    """One tick of a wrap-style (non-bouncing) marquee. Returns (offset, pause).
+    `offset` climbs 0 -> max_off by `step`, pauses `end_pause` frames at the end,
+    then JUMPS back to 0 and repeats (it never reverses). Static (0, 0) whenever
+    max_off <= 0. Mirrors, for max_off > 0, the math inlined in Hud._marquee_step
+    so the feed marquee and the now-playing ticker share one wrap implementation."""
+    if max_off <= 0:
+        return 0, 0
+    if pause > 0:
+        return offset, pause - 1
+    if offset >= max_off:
+        return 0, end_pause                 # reached the end -> jump back to the start
+    offset += step
+    if offset >= max_off:
+        return max_off, end_pause           # clamp at the end, pause, then wrap next tick
+    return offset, 0
+
+
 # --- WinRT SMTC reader (guarded; never raises) ---------------------------
 import ctypes
 import time
