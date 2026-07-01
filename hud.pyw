@@ -56,6 +56,7 @@ STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
 URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
 DISMISS_GLYPH = "✕"   # ✕  per-item mark-read
 MARKALL_GLYPH = "✓"   # ✓  header mark-all-read
+RELOAD_GLYPH = "⟳"    # ⟳  refresh all feeds (right end of the header)
 ACTION_ZONE_W = 18         # px hit target at the right edge for ✕ / ✓
 
 
@@ -122,13 +123,23 @@ class Hud:
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._clock_text = c.create_text(WIDTH // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
+        # Reload control: a ⟳ at the right end of the clock row. Click it to
+        # refetch every feed (also re-reads config.json, so token/feed edits apply
+        # without a restart). Persistent item -> its hit box is a constant.
+        self._reload_item = c.create_text(WIDTH - PAD, y3, anchor="e",
+                                          text=RELOAD_GLYPH, fill=DIM, font=CLOCK_FONT)
+        self._reload_box = (WIDTH - PAD - ACTION_ZONE_W, y3 - 10, WIDTH, y3 + 10)
         self._cpu_line = c.create_line(0, 0, 0, 0, fill=CPU_COLOR, width=1, state="hidden")
         self._ram_line = c.create_line(0, 0, 0, 0, fill=RAM_COLOR, width=1, state="hidden")
         self._cpu_band = (PAD + 1, PAD + ROW_H - 1)
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
-        for w in (root, self.canvas):
+        # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
+        # whole window, and a canvas's bindtags already include its toplevel. Binding
+        # on both root and the canvas would fire each handler twice for one click
+        # (e.g. opening a feed link in two browser tabs).
+        for w in (self.canvas,):
             w.bind("<Button-1>", self._on_press)
             w.bind("<B1-Motion>", self._on_drag)
             w.bind("<ButtonRelease-1>", self._on_release)
@@ -171,6 +182,9 @@ class Hud:
 
     def _on_release(self, event):
         if not self._moved:
+            if self._in_reload(event.x, event.y):        # ⟳ reload control
+                self._reload_feeds()
+                return
             action = self._action_at(event.x, event.y)   # dismiss/mark-all zone wins over open
             if action is not None:
                 self._do_dismiss(action)
@@ -186,6 +200,12 @@ class Hud:
         self.cfg["hud"]["x"] = self.root.winfo_x()
         self.cfg["hud"]["y"] = self.root.winfo_y()
         self._save()
+
+    def _in_reload(self, x, y):
+        """True if (x, y) is within the fixed ⟳ reload control at the header's
+        right edge (a constant box, unlike the per-draw feed hit zones)."""
+        x0, y0, x1, y1 = self._reload_box
+        return x0 <= x <= x1 and y0 <= y <= y1
 
     def _do_dismiss(self, action):
         """Optimistically apply a mark-read action to the rendered tile, then hand
