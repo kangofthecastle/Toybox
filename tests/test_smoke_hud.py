@@ -1705,6 +1705,24 @@ class TestHudWeather(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_rich_tile_shows_glyph_condition_and_detail(self):
+        import feedkit.manager as manager
+        from feedkit.model import Weather
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            w = Weather(54.0, 66.0, 48.0, [50.0, 52.0], "°F",
+                        code=0, feels=51.0, humidity=72, wind=9.0, precip=10)
+            hud.feed_state[0] = manager.FeedResult("ok", [w], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Clear"))      # condition word
+            self.assertTrue(hud._feed_has_text("☀"))           # condition glyph
+            self.assertTrue(hud._feed_has_text("Feels 51°"))   # feels-like
+            self.assertTrue(hud._feed_has_text("Hum 72%"))     # detail line
+            self.assertTrue(hud._feed_has_text("Wind 9mph"))
+        finally:
+            hud.close(); root.destroy()
+
     def test_weather_shown_regardless_of_active_tab(self):
         import feedkit.manager as manager
         root, hud = self._make_hud([self.FEED])

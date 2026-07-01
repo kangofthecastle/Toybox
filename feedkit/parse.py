@@ -355,7 +355,20 @@ def parse_weather(body, range_):
             series = dmax
             hi = max(dmax) if dmax else current
             lo = min(dmin) if dmin else current
-        return model.Weather(float(current), float(hi), float(lo), series, unit)
+        code = int(cur.get("weather_code")) if _finite_num(cur.get("weather_code")) else -1
+        feels = cur.get("apparent_temperature")
+        feels = float(feels) if _finite_num(feels) else None
+        humidity = cur.get("relative_humidity_2m")
+        humidity = int(round(float(humidity))) if _finite_num(humidity) else None
+        wind = cur.get("wind_speed_10m")
+        wind = float(wind) if _finite_num(wind) else None
+        precip = None
+        for v in (daily.get("precipitation_probability_max") or []):
+            if _finite_num(v):
+                precip = int(round(float(v)))
+                break
+        return model.Weather(float(current), float(hi), float(lo), series, unit,
+                             code, feels, humidity, wind, precip)
     except Exception:
         return None
 

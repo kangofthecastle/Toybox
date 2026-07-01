@@ -89,10 +89,19 @@ def format_quote_line(quote):
     return "%-5s %7.2f %s%.1f%%" % (quote.symbol, quote.price, arrow, abs(quote.change_pct))
 
 
-Weather = namedtuple("Weather", ["current", "hi", "lo", "series", "unit"])
+Weather = namedtuple(
+    "Weather",
+    ["current", "hi", "lo", "series", "unit",
+     "code", "feels", "humidity", "wind", "precip"],
+    defaults=(-1, None, None, None, None))
 # current/hi/lo are floats (temperatures already in the feed's requested unit);
 # series is list[float] for the sparkline (hourly for 'today', daily-max for
 # multi-day); unit is the API's unit symbol string ("°F"/"°C") or "" when absent.
+# The trailing five are richer, all-optional fields (defaulted so the historic
+# 5-arg construction still works): code is the WMO weather code (-1 unknown);
+# feels is the apparent temperature; humidity is relative-humidity %; wind is the
+# current wind speed (mph for °F feeds, km/h for °C); precip is today's rain-
+# chance %. feels/humidity/wind/precip are None when the API omits them.
 
 WEATHER_RANGES = {"today": 1, "3d": 3, "7d": 7}          # range -> forecast_days
 WEATHER_RANGE_ORDER = ("today", "3d", "7d")
@@ -114,19 +123,88 @@ def openmeteo_forecast_url(lat, lon, units, range_):
     daily max/min; forecast_days follows the range (today=1, 3d=3, 7d=7)."""
     days = WEATHER_RANGES.get(range_, WEATHER_RANGES[DEFAULT_WEATHER_RANGE])
     unit = units if units in ("fahrenheit", "celsius") else "fahrenheit"
+    wind_unit = "mph" if unit == "fahrenheit" else "kmh"
     return ("https://api.open-meteo.com/v1/forecast"
             "?latitude=%s&longitude=%s"
-            "&current=temperature_2m&hourly=temperature_2m"
-            "&daily=temperature_2m_max,temperature_2m_min"
-            "&temperature_unit=%s&timezone=auto&forecast_days=%d"
-            % (lat, lon, unit, days))
+            "&current=temperature_2m,weather_code,apparent_temperature,"
+            "relative_humidity_2m,wind_speed_10m"
+            "&hourly=temperature_2m"
+            "&daily=temperature_2m_max,temperature_2m_min,weather_code,"
+            "precipitation_probability_max"
+            "&temperature_unit=%s&wind_speed_unit=%s&timezone=auto&forecast_days=%d"
+            % (lat, lon, unit, wind_unit, days))
 
 
-def format_weather_line(weather):
-    """One-line weather render: '<cur>°  H <hi>°  L <lo>°' with temps rounded to
-    whole degrees. Example: '72°  H 78°  L 61°'."""
-    return "%d°  H %d°  L %d°" % (
-        round(weather.current), round(weather.hi), round(weather.lo))
+# WMO weather-code buckets -> (BMP glyph, short label). Kept to base-plane symbols
+# (no astral emoji) so they render crisply in Segoe UI Symbol, matching the media
+# glyphs. An unknown/missing code renders no glyph and no label.
+_WEATHER_CODES = (
+    ((0,),                     "☀", "Clear"),      # ☀
+    ((1, 2),                   "⛅", "Partly"),     # ⛅ sun behind cloud
+    ((3,),                     "☁", "Cloudy"),     # ☁
+    ((45, 48),                 "☁", "Fog"),        # ☁ (fog)
+    ((51, 53, 55, 56, 57),     "☂", "Drizzle"),    # ☂
+    ((61, 63, 65, 66, 67),     "☔", "Rain"),       # ☔
+    ((80, 81, 82),             "☔", "Showers"),    # ☔
+    ((71, 73, 75, 77, 85, 86), "❄", "Snow"),       # ❄
+    ((95, 96, 99),             "⛈", "Storm"),      # ⛈
+)
+
+
+def _weather_bucket(code):
+    try:
+        c = int(code)
+    except (TypeError, ValueError):
+        return None
+    for codes, glyph, label in _WEATHER_CODES:
+        if c in codes:
+            return glyph, label
+    return None
+
+
+def weather_glyph(code):
+    """A base-plane condition glyph for a WMO weather code (Segoe UI Symbol), or
+    '' when the code is unknown/missing."""
+    b = _weather_bucket(code)
+    return b[0] if b else ""
+
+
+def weather_label(code):
+    """A short condition word for a WMO weather code ('Clear', 'Rain', ...), or ''
+    when the code is unknown/missing."""
+    b = _weather_bucket(code)
+    return b[1] if b else ""
+
+
+def format_weather_current(weather):
+    """The lead line: '<cur>°  <condition>', with the condition omitted when the
+    weather code is unknown. Example: '72°  Clear'."""
+    s = "%d°" % round(weather.current)
+    label = weather_label(weather.code)
+    return "%s  %s" % (s, label) if label else s
+
+
+def format_weather_hilo(weather):
+    """The hi/lo line: 'H <hi>°  L <lo>°', plus '  Feels <feels>°' when the
+    apparent temperature is known."""
+    s = "H %d°  L %d°" % (round(weather.hi), round(weather.lo))
+    if weather.feels is not None:
+        s += "  Feels %d°" % round(weather.feels)
+    return s
+
+
+def format_weather_detail(weather):
+    """A details line built from whatever secondary fields are present: humidity,
+    wind (mph for °F feeds, km/h otherwise) and rain chance. '' when none known."""
+    parts = []
+    if weather.humidity is not None:
+        parts.append("Hum %d%%" % weather.humidity)
+    if weather.wind is not None:
+        wind_unit = "mph" if "F" in (weather.unit or "") else "km/h"
+        parts.append("Wind %d%s" % (round(weather.wind), wind_unit))
+    if weather.precip is not None:
+        parts.append("Rain %d%%" % weather.precip)
+    return "   ".join(parts)
 
 
 _SYMBOL_JUNK = re.compile(r"[^A-Z0-9.^-]")

@@ -82,6 +82,8 @@ STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
 STOCK_UP = "#3fb950"       # green: day change >= 0
 STOCK_DOWN = "#f85149"     # red: day change < 0
 STOCK_CHART_H = 20         # px per drawn price-chart row
+WEATHER_GLYPH_FONT = ("Segoe UI Symbol", 14)   # condition glyph (☀ ☁ ☔ ❄ ⛈)
+WEATHER_HEAD_H = 20        # px for the glyph + current-temp lead row
 ACCENT = "#33d6ff"         # cyan: active-tab + active range-toggle indicator
 HOVER_BG = "#24242e"       # subtle highlight band behind the hovered row/tab
 URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
@@ -230,6 +232,8 @@ class Hud:
         # Pixel-width measurer for line 1 (emoji glyphs are double-width, so
         # char-count truncation under-budgets and collides with the age).
         self._feed_font_measure = tkfont.Font(root=root, family=FEED_FONT[0], size=FEED_FONT[1])
+        self._weather_glyph_font = tkfont.Font(root=root, family=WEATHER_GLYPH_FONT[0],
+                                               size=WEATHER_GLYPH_FONT[1])
 
         # Persistent canvas items: created once, updated in place each tick
         # (no per-frame create/destroy churn -- matches the lightweight pattern).
@@ -1130,12 +1134,34 @@ class Hud:
             self._feed_items.append(lid)
             return y + FEED_LINE_H
         stale = payload["state"] in ("stale", "error")
+        fg = FEED_DIM if stale else FEED_FG
         color = FEED_DIM if stale else ACCENT
-        lid = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
-                            text=_fit(feedmodel.format_weather_line(w)),
-                            fill=(FEED_DIM if stale else FEED_FG), font=FEED_FONT)
-        self._feed_items.append(lid)
+        # Lead row: condition glyph + current temperature + condition word.
+        cx = PAD + 6
+        glyph = feedmodel.weather_glyph(w.code)
+        if glyph:
+            gid = c.create_text(cx, y + WEATHER_HEAD_H // 2, anchor="w", text=glyph,
+                                fill=color, font=WEATHER_GLYPH_FONT)
+            self._feed_items.append(gid)
+            cx += self._weather_glyph_font.measure(glyph) + 4
+        curid = c.create_text(cx, y + WEATHER_HEAD_H // 2, anchor="w",
+                              text=_fit(feedmodel.format_weather_current(w)),
+                              fill=fg, font=FEED_TITLE_FONT)
+        self._feed_items.append(curid)
+        y += WEATHER_HEAD_H
+        # Row: hi / lo (+ feels-like when known).
+        hlid = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                             text=_fit(feedmodel.format_weather_hilo(w)),
+                             fill=fg, font=FEED_FONT)
+        self._feed_items.append(hlid)
         y += FEED_LINE_H
+        # Row: humidity / wind / rain chance -- only when at least one is known.
+        detail = feedmodel.format_weather_detail(w)
+        if detail:
+            did = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                                text=_fit(detail), fill=FEED_DIM, font=FEED_FONT)
+            self._feed_items.append(did)
+            y += FEED_LINE_H
         pts = _stock_points(w.series, PAD + 6, self.width - PAD, y + 2, y + STOCK_CHART_H - 2)
         if pts:
             bottom = y + STOCK_CHART_H - 2

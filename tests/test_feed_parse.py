@@ -490,6 +490,48 @@ class TestParseWeather(unittest.TestCase):
         }).encode()
         self.assertEqual(parse.parse_weather(body, "today").unit, "")
 
+    def test_extracts_richer_current_and_daily_fields(self):
+        body = json.dumps({
+            "current": {"temperature_2m": 72.0, "weather_code": 3,
+                        "apparent_temperature": 69.5,
+                        "relative_humidity_2m": 64, "wind_speed_10m": 9.4},
+            "current_units": {"temperature_2m": "°F"},
+            "hourly": {"temperature_2m": [70.0, 72.0]},
+            "daily": {"temperature_2m_max": [78.0], "temperature_2m_min": [61.0],
+                      "weather_code": [3], "precipitation_probability_max": [20]},
+        }).encode()
+        w = parse.parse_weather(body, "today")
+        self.assertEqual(w.code, 3)
+        self.assertAlmostEqual(w.feels, 69.5)
+        self.assertEqual(w.humidity, 64)
+        self.assertAlmostEqual(w.wind, 9.4)
+        self.assertEqual(w.precip, 20)
+
+    def test_richer_fields_default_when_missing(self):
+        w = parse.parse_weather(self._today_body(), "today")   # base body: no extras
+        self.assertEqual(w.code, -1)
+        self.assertIsNone(w.feels)
+        self.assertIsNone(w.humidity)
+        self.assertIsNone(w.wind)
+        self.assertIsNone(w.precip)
+
+    def test_non_finite_richer_fields_default(self):
+        body = json.dumps({
+            "current": {"temperature_2m": 50.0, "weather_code": "x",
+                        "apparent_temperature": None, "relative_humidity_2m": "n/a",
+                        "wind_speed_10m": float("nan")},
+            "current_units": {"temperature_2m": "°F"},
+            "hourly": {"temperature_2m": [50.0]},
+            "daily": {"temperature_2m_max": [55.0], "temperature_2m_min": [45.0],
+                      "precipitation_probability_max": [None]},
+        }).encode()
+        w = parse.parse_weather(body, "today")
+        self.assertEqual(w.code, -1)
+        self.assertIsNone(w.feels)
+        self.assertIsNone(w.humidity)
+        self.assertIsNone(w.wind)
+        self.assertIsNone(w.precip)
+
     def test_garbage_is_none(self):
         self.assertIsNone(parse.parse_weather(b"<<not json>>", "today"))
 
