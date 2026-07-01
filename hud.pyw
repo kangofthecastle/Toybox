@@ -47,6 +47,12 @@ SPARK_LEFT = SPARK_RIGHT - SPARK_W
 DISK_MAX_CHARS = 26    # cap for the packed disk-free header row (narrow width)
 HISTORY = 60           # ~60 samples in the deque
 
+# Edge-peek dock-to-edge (Feature 6). All session-only, like the width toggle.
+DOCK_THRESHOLD = 24    # px from a screen edge (on drop) that triggers docking
+DOCK_LIP = 6           # px of the window left peeking when docked and hidden
+DOCK_ANIM_MS = 30      # per-frame delay of the slide animation
+DOCK_ANIM_STEPS = 4    # frames per slide (reveal or hide)
+
 BG = "#15151a"         # dark translucent background
 FG = "#d8d8e0"         # light text
 DIM = "#6a6a78"        # clock / faint text
@@ -210,6 +216,10 @@ class Hud:
         if not _smoke_ms():
             self._start_schedule_poller()
         self.width = WIDTH        # session-only; resets narrow each launch
+        self._dock_edge = None    # None|'left'|'right'|'top'|'bottom'; session-only
+        self._dock_after = None   # pending dock-slide after() id (cancelled on close)
+        self._dock_target = None  # (w, h, x, y) the slide animates toward, or None
+        self._dock_steps = 0      # frames left in the current slide
 
         self.canvas = tk.Canvas(
             root, width=self.width, height=HEIGHT, bg=BG,
@@ -349,6 +359,7 @@ class Hud:
         self.cfg["hud"]["x"] = self.root.winfo_x()
         self.cfg["hud"]["y"] = self.root.winfo_y()
         self._save()
+        self._maybe_dock()
 
     def _dispatch_action(self, action):
         kind = action[0]
@@ -1145,6 +1156,12 @@ class Hud:
             except Exception:
                 pass
             self._drain_after = None
+        if self._dock_after is not None:
+            try:
+                self.root.after_cancel(self._dock_after)
+            except Exception:
+                pass
+            self._dock_after = None
         self._stop_marquee()
         self._np_stop.set()
         if self._np_marquee_after is not None:
@@ -1165,6 +1182,79 @@ class Hud:
                 pass
         if getattr(self, "settings", None) is not None:
             self.settings.close()
+
+    def _maybe_dock(self):
+        """On drag-release, snap to a screen edge if within DOCK_THRESHOLD (and
+        slide to the hidden lip), else undock. Session-only; never persisted."""
+        try:
+            x = self.root.winfo_x(); y = self.root.winfo_y()
+            w = self.root.winfo_width(); h = self.root.winfo_height()
+            sw = self.root.winfo_screenwidth(); sh = self.root.winfo_screenheight()
+        except Exception:
+            return
+        self._dock_edge = edge_for(x, y, w, h, sw, sh, DOCK_THRESHOLD)
+        if self._dock_edge:
+            self._dock_animate(revealed=False)   # slide out to the peeking lip
+
+    def _target_from(self, edge, revealed):
+        """Parse docked_geometry(edge, ...) into (w, h, x, y) ints for the slide
+        animator. Uses the live window size so it composes with the width toggle."""
+        w = self.root.winfo_width(); h = self.root.winfo_height()
+        sw = self.root.winfo_screenwidth(); sh = self.root.winfo_screenheight()
+        x = self.root.winfo_x(); y = self.root.winfo_y()
+        geo = docked_geometry(edge, x, y, w, h, sw, sh, revealed, DOCK_LIP)
+        size, _, rest = geo.partition("+")       # "WxH", "+", "X+Y" (X may be -N)
+        gw, gh = size.split("x")
+        gx, gy = rest.split("+")
+        return int(gw), int(gh), int(gx), int(gy)
+
+    def _dock_animate(self, revealed):
+        """Start (or restart) the chained-after slide toward the docked target for
+        the current edge. No-op when not docked. Guarded so a bad geometry never
+        crashes the HUD."""
+        if not self._dock_edge:
+            return
+        if self._dock_after is not None:
+            try:
+                self.root.after_cancel(self._dock_after)
+            except Exception:
+                pass
+            self._dock_after = None
+        try:
+            self._dock_target = self._target_from(self._dock_edge, revealed)
+        except Exception:
+            self._dock_target = None
+            return
+        self._dock_steps = DOCK_ANIM_STEPS
+        self._dock_step()
+
+    def _dock_step(self):
+        """One frame of the dock slide: move a fraction toward _dock_target and, if
+        frames remain, reschedule. The final frame snaps exactly and clears state."""
+        if self._dock_target is None:
+            return
+        w, h, tx, ty = self._dock_target
+        try:
+            cx = self.root.winfo_x(); cy = self.root.winfo_y()
+        except Exception:
+            self._dock_target = None
+            self._dock_after = None
+            return
+        if self._dock_steps <= 1:
+            nx, ny = tx, ty
+        else:
+            nx = cx + (tx - cx) // self._dock_steps
+            ny = cy + (ty - cy) // self._dock_steps
+        try:
+            self.root.geometry("%dx%d+%d+%d" % (w, h, nx, ny))
+        except Exception:
+            pass
+        self._dock_steps -= 1
+        if self._dock_steps <= 0:
+            self._dock_target = None
+            self._dock_after = None
+        else:
+            self._dock_after = self.root.after(DOCK_ANIM_MS, self._dock_step)
 
     def _open_at(self, x, y):
         for y0, y1, url in self._hit:

@@ -1904,5 +1904,61 @@ class TestHudDockedGeometry(unittest.TestCase):
         self.assertEqual(self._geo(None, False), "220x134+50+300")
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudEdgePeekDock(_HudTestBase):
+    def test_drop_near_left_edge_docks_and_slides_off(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None                 # never touch config.json here
+            root.geometry("%dx%d+0+150" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            ev = type("E", (), {"x": 5, "y": 5, "x_root": 0, "y_root": 150})()
+            hud._moved = True                        # simulate a drag having occurred
+            hud._on_release(ev)                      # release near the left edge
+            self.assertEqual(hud._dock_edge, "left")     # docked
+            self.assertIsNotNone(hud._dock_after)        # slide-to-hidden started
+            # drive the chained animation to completion synchronously
+            for _ in range(hudmod.DOCK_ANIM_STEPS + 2):
+                hud._dock_step()
+            root.update_idletasks()
+            self.assertLess(root.winfo_x(), 0)           # window slid off the left edge
+        finally:
+            hud.close(); root.destroy()
+
+    def test_drop_in_center_undocks(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            sw = root.winfo_screenwidth(); sh = root.winfo_screenheight()
+            mx = max(0, min(sw // 2, sw - hudmod.WIDTH))
+            my = max(0, min(sh // 2, sh - hudmod.HEIGHT))
+            root.geometry("%dx%d+%d+%d" % (hudmod.WIDTH, hudmod.HEIGHT, mx, my))
+            root.update_idletasks()
+            hud._dock_edge = "left"                  # pretend it was docked before
+            ev = type("E", (), {"x": 5, "y": 5, "x_root": mx, "y_root": my})()
+            hud._moved = True
+            hud._on_release(ev)                      # released in the middle
+            self.assertIsNone(hud._dock_edge)        # no edge -> undocked
+        finally:
+            hud.close(); root.destroy()
+
+    def test_close_cancels_pending_dock_after(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            root.geometry("%dx%d+0+150" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            hud._dock_edge = "left"
+            hud._dock_animate(revealed=False)        # schedules an after()
+            self.assertIsNotNone(hud._dock_after)
+            hud.close()                              # must cancel it without raising
+            self.assertIsNone(hud._dock_after)
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
