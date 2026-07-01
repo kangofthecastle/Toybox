@@ -229,8 +229,59 @@ class FeedSettingsWindow:
                 label = "%s  [%s]%s" % (norm.get("title", "feed"), feed.get("type", "?"),
                                         "" if norm.get("valid") else "  !")
                 tk.Label(row, text=label, anchor="w").pack(side="left")
+                if isinstance(feed, dict) and feed.get("type") == "stocks":
+                    self._render_symbol_editor(i, feed)
         except tk.TclError:
             return
+
+    def _render_symbol_editor(self, index, feed):
+        """Under a stocks feed row: each current ticker with a ✕ to drop it, plus a
+        small entry + '+' to append one. Edits the raw feed's symbol list in place
+        and persists via the scoped _persist."""
+        syms = feed.get("symbols") if isinstance(feed.get("symbols"), list) else []
+        chips = tk.Frame(self._list); chips.pack(fill="x", padx=(20, 0))
+        for sym in syms:
+            if not isinstance(sym, str):
+                continue
+            chip = tk.Frame(chips); chip.pack(side="left", padx=2)
+            tk.Label(chip, text=sym).pack(side="left")
+            tk.Button(chip, text="✕", width=2,
+                      command=lambda idx=index, s=sym: self._remove_symbol(idx, s)).pack(side="left")
+        arow = tk.Frame(self._list); arow.pack(fill="x", padx=(20, 0))
+        addvar = tk.StringVar()
+        tk.Entry(arow, width=8, textvariable=addvar).pack(side="left")
+        tk.Button(arow, text="+", width=2,
+                  command=lambda idx=index, v=addvar: self._add_symbol(idx, v)).pack(side="left")
+
+    def _remove_symbol(self, index, symbol):
+        """Drop one ticker from a stocks feed's raw symbol list and persist."""
+        feeds = list(self.hud.cfg.get("feeds", []))
+        if not (0 <= index < len(feeds)) or not isinstance(feeds[index], dict):
+            return
+        feed = dict(feeds[index])
+        feed["symbols"] = [s for s in feed.get("symbols", []) if s != symbol]
+        feeds[index] = feed
+        self.hud.cfg["feeds"] = feeds
+        self._persist()
+        self._refresh_list()
+
+    def _add_symbol(self, index, var):
+        """Append parsed ticker(s) to a stocks feed's raw symbol list (deduped, cap
+        10) and persist. No-op when the entry parses to nothing."""
+        feeds = list(self.hud.cfg.get("feeds", []))
+        if not (0 <= index < len(feeds)) or not isinstance(feeds[index], dict):
+            return
+        added = model.parse_symbols(var.get())
+        if not added:
+            return
+        feed = dict(feeds[index])
+        existing = feed.get("symbols") if isinstance(feed.get("symbols"), list) else []
+        combined = " ".join([str(s) for s in existing] + added)
+        feed["symbols"] = model.parse_symbols(combined)
+        feeds[index] = feed
+        self.hud.cfg["feeds"] = feeds
+        self._persist()
+        self._refresh_list()
 
     # --- GitHub tab -----------------------------------------------------
     def _build_github_tab(self):

@@ -347,6 +347,61 @@ class TestFeedSettings(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_remove_symbol_drops_ticker_and_persists(self):
+        feed = {"type": "stocks", "title": "Markets",
+                "symbols": ["SPY", "META", "NVDA"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._remove_symbol(0, "META")
+            self.assertEqual(hud.cfg["feeds"][0]["symbols"], ["SPY", "NVDA"])
+            self.assertTrue(hud.manager.feeds[0]["valid"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_add_symbol_appends_ticker_deduped_and_capped(self):
+        import tkinter as tk
+        feed = {"type": "stocks", "title": "Markets",
+                "symbols": ["SPY"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            var = tk.StringVar()
+            var.set("nvda, spy")                     # 'spy' already present -> deduped
+            hud.settings._add_symbol(0, var)
+            self.assertEqual(hud.cfg["feeds"][0]["symbols"], ["SPY", "NVDA"])
+            # empty/garbage entry is a no-op
+            blank = tk.StringVar(); blank.set("  !!  ")
+            hud.settings._add_symbol(0, blank)
+            self.assertEqual(hud.cfg["feeds"][0]["symbols"], ["SPY", "NVDA"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_stocks_feed_row_renders_symbol_chips_and_add(self):
+        feed = {"type": "stocks", "title": "Markets",
+                "symbols": ["SPY", "NVDA"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            texts = []
+
+            def walk(w):
+                for c in w.winfo_children():
+                    try:
+                        texts.append(c.cget("text"))
+                    except Exception:
+                        pass
+                    walk(c)
+            walk(hud.settings._list)
+            self.assertIn("SPY", texts)
+            self.assertIn("NVDA", texts)
+            self.assertIn("+", texts)                # add-ticker button present
+            hud.close()
+        finally:
+            root.destroy()
+
 
 def _fill_of(hud, needle):
     """Fill color of the first feed canvas item whose text contains needle.
