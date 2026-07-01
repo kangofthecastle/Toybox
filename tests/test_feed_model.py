@@ -554,5 +554,28 @@ class TestWeatherModel(unittest.TestCase):
             {"type": "weather", "city": "X"})["tab"], "global")
 
 
+class TestParseSymbols(unittest.TestCase):
+    def test_splits_on_commas_and_spaces_uppercases(self):
+        self.assertEqual(model.parse_symbols("spy, meta nvda"), ["SPY", "META", "NVDA"])
+
+    def test_strips_junk_chars_keeps_allowed(self):
+        self.assertEqual(model.parse_symbols("brk-b ^gspc a@b!"), ["BRK-B", "^GSPC", "AB"])
+
+    def test_dedupes_preserving_first_seen_order(self):
+        self.assertEqual(model.parse_symbols("aapl AAPL msft aapl"), ["AAPL", "MSFT"])
+
+    def test_caps_at_ten(self):
+        syms = model.parse_symbols(" ".join("S%d" % i for i in range(20)))
+        self.assertEqual(len(syms), 10)
+        self.assertEqual(syms[0], "S0")
+        self.assertEqual(syms[-1], "S9")
+
+    def test_empty_and_non_str_return_empty(self):
+        self.assertEqual(model.parse_symbols(""), [])
+        self.assertEqual(model.parse_symbols("   ,  "), [])
+        self.assertEqual(model.parse_symbols(None), [])
+        self.assertEqual(model.parse_symbols(123), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -129,6 +129,27 @@ def format_weather_line(weather):
         round(weather.current), round(weather.hi), round(weather.lo))
 
 
+_SYMBOL_JUNK = re.compile(r"[^A-Z0-9.^-]")
+_SYMBOL_SPLIT = re.compile(r"[,\s]+")
+
+
+def parse_symbols(text):
+    """Split a comma/whitespace-separated ticker string into a clean symbol list:
+    upper-cased, stripped to [A-Z0-9.^-], deduped preserving first-seen order, and
+    capped at 10. Never raises; non-str or empty input -> []. Mirrors the cleaning
+    normalize_feed applies to a stocks feed's 'symbols'."""
+    if not isinstance(text, str):
+        return []
+    out = []
+    for tok in _SYMBOL_SPLIT.split(text):
+        clean = _SYMBOL_JUNK.sub("", tok.strip().upper())
+        if clean and clean not in out:
+            out.append(clean)
+            if len(out) >= 10:
+                break
+    return out
+
+
 NEWS_TABS = (("global", "Global"), ("markets", "Markets"),
              ("tech", "Tech"), ("sports", "Sports"))
 DEFAULT_TAB = "tech"
