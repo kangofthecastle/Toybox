@@ -29,6 +29,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
 HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/clock/media) + margin
+WIDTH_WIDE = 560       # the "expanded" fixed width (session-only toggle)
 PAD = 10
 ROW_H = 22
 LABEL_X = PAD
@@ -68,6 +69,7 @@ URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
 DISMISS_GLYPH = "✕"   # ✕  per-item mark-read
 MARKALL_GLYPH = "✓"   # ✓  header mark-all-read
 RELOAD_GLYPH = "⟳"    # ⟳  refresh all feeds (right end of the header)
+EXPAND_GLYPH = "↔"    # ↔  toggle narrow(220) <-> wide(560)
 ACTION_ZONE_W = 18         # px hit target at the right edge for ✕ / ✓
 
 
@@ -141,6 +143,7 @@ class Hud:
         self.active_tab = feedmodel.coerce_default_tab(cfg["hud"].get("default_tab"))
         token = self._github_token()
         self.manager = feedmanager.FeedManager(cfg.get("feeds", []), token=token)
+        self.width = WIDTH        # session-only; resets narrow each launch
 
         self.canvas = tk.Canvas(
             root, width=WIDTH, height=HEIGHT, bg=BG,
@@ -162,7 +165,7 @@ class Hud:
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
-        self._clock_text = c.create_text(WIDTH // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
+        self._clock_text = c.create_text(self.width // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
         self._cpu_line = c.create_line(0, 0, 0, 0, fill=CPU_COLOR, width=1, state="hidden")
         self._ram_line = c.create_line(0, 0, 0, 0, fill=RAM_COLOR, width=1, state="hidden")
         self._gpu_line = c.create_line(0, 0, 0, 0, fill=GPU_COLOR, width=1, state="hidden")
@@ -171,7 +174,7 @@ class Hud:
         self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
         ymedia = PAD + 4 * ROW_H + ROW_H // 2
-        cx = WIDTH // 2
+        cx = self.width // 2
         gap = 44
         self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
         self._media_play = c.create_text(cx, ymedia, text=MEDIA_PLAY, fill=FG, font=MEDIA_FONT)
@@ -261,6 +264,8 @@ class Hud:
             (self._refresh_news if action[1] == "news" else self._refresh_github)()
         elif kind == "range":
             self._set_stock_range(action[1], action[2])
+        elif kind == "width":
+            self._toggle_width()
         else:
             self._do_dismiss(action)
 
@@ -368,7 +373,7 @@ class Hud:
         top, bottom = band
         height = bottom - top
         step = SPARK_W / (HISTORY - 1)
-        x0 = SPARK_RIGHT - (n - 1) * step  # newest sample sits at the right edge
+        x0 = (self.width - PAD) - (n - 1) * step  # newest sample sits at the right edge
         pts = []
         for i, v in enumerate(hist):
             frac = max(0.0, min(1.0, v / 100.0))
@@ -486,10 +491,10 @@ class Hud:
         self._feed_items.append(tid)
         self._register_hit(y, title_url)
         if header_action is not None:
-            mk = c.create_text(WIDTH - PAD, y, anchor="e", text=MARKALL_GLYPH,
+            mk = c.create_text(self.width - PAD, y, anchor="e", text=MARKALL_GLYPH,
                                fill=FEED_DIM, font=FEED_TITLE_FONT)
             self._feed_items.append(mk)
-            self._register_action(y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, header_action)
+            self._register_action(y, self.width - PAD - ACTION_ZONE_W, self.width, header_action)
         y += FEED_LINE_H
         for row in lines:
             if len(row) == 3:
@@ -507,14 +512,14 @@ class Hud:
                                    fill=color, font=FEED_FONT)
                 self._feed_items.append(l1)
                 if age:
-                    aid = c.create_text(WIDTH - PAD - reserve, y, anchor="e", text=age,
+                    aid = c.create_text(self.width - PAD - reserve, y, anchor="e", text=age,
                                         fill=FEED_DIM, font=FEED_FONT)
                     self._feed_items.append(aid)
                 if dismiss is not None:
-                    xg = c.create_text(WIDTH - PAD, y, anchor="e", text=DISMISS_GLYPH,
+                    xg = c.create_text(self.width - PAD, y, anchor="e", text=DISMISS_GLYPH,
                                        fill=FEED_DIM, font=FEED_FONT)
                     self._feed_items.append(xg)
-                    self._register_action(y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, dismiss)
+                    self._register_action(y, self.width - PAD - ACTION_ZONE_W, self.width, dismiss)
                 self._register_hit(y, url)
                 y += FEED_LINE_H
                 l2 = c.create_text(PAD + 12, y, anchor="w", text=self._fit_px(subtitle, PAD + 12),
@@ -554,7 +559,7 @@ class Hud:
                 return (x0 - 3, y0, x1 + 3, y1)
         for y0, y1, _url in self._hit:
             if y0 <= y <= y1:
-                return (PAD, y0, WIDTH - PAD, y1)
+                return (PAD, y0, self.width - PAD, y1)
         return None
 
     def _apply_hover(self):
@@ -583,7 +588,7 @@ class Hud:
         """Trim text with an ellipsis so it fits from x_start to the right margin
         at FEED_FONT width (pixel-accurate, unlike the char-count _fit)."""
         m = self._feed_font_measure.measure
-        budget = WIDTH - PAD - x_start
+        budget = self.width - PAD - x_start
         if m(text) <= budget:
             return text
         while text and m(text + "…") > budget:
@@ -594,7 +599,7 @@ class Hud:
         """Truncate line 1 by measured pixel width so it never collides with the
         right-aligned age (and the ✕ glyph when present, via reserve px)."""
         m = self._feed_font_measure.measure
-        budget = WIDTH - 2 * PAD - m(age) - 8 - reserve
+        budget = self.width - 2 * PAD - m(age) - 8 - reserve
         if m(text) <= budget:
             return text
         while text and m(text + "…") > budget:
@@ -646,23 +651,28 @@ class Hud:
                 ul = c.create_rectangle(x, uy, x + w, uy + 2, fill=ACCENT, outline="")
                 self._feed_items.append(ul)
             x += w + 6
-        rid = c.create_text(WIDTH - PAD, row_y, anchor="e", text=RELOAD_GLYPH,
+        rid = c.create_text(self.width - PAD, row_y, anchor="e", text=RELOAD_GLYPH,
                             fill=FEED_DIM, font=FEED_TITLE_FONT)
         self._feed_items.append(rid)
-        self._register_action(row_y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, ("refresh", "news"))
+        self._register_action(row_y, self.width - PAD - ACTION_ZONE_W, self.width, ("refresh", "news"))
+        ex_x = self.width - PAD - ACTION_ZONE_W - 6
+        eid = c.create_text(ex_x, row_y, anchor="e", text=EXPAND_GLYPH,
+                            fill=FEED_DIM, font=FEED_TITLE_FONT)
+        self._feed_items.append(eid)
+        self._register_action(row_y, ex_x - ACTION_ZONE_W, ex_x, ("width",))
         return y + FEED_LINE_H + FEED_TITLE_GAP
 
     def _draw_github_header(self, y):
         c = self.canvas
-        dv = c.create_line(PAD, y + 1, WIDTH - PAD, y + 1, fill=FEED_DIM, width=1)
+        dv = c.create_line(PAD, y + 1, self.width - PAD, y + 1, fill=FEED_DIM, width=1)
         self._feed_items.append(dv)
         row_y = y + FEED_LINE_H // 2
         tid = c.create_text(PAD, row_y, anchor="w", text="GitHub", fill=FEED_DIM, font=FEED_TITLE_FONT)
         self._feed_items.append(tid)
-        rid = c.create_text(WIDTH - PAD, row_y, anchor="e", text=RELOAD_GLYPH,
+        rid = c.create_text(self.width - PAD, row_y, anchor="e", text=RELOAD_GLYPH,
                             fill=FEED_DIM, font=FEED_TITLE_FONT)
         self._feed_items.append(rid)
-        self._register_action(row_y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, ("refresh", "github"))
+        self._register_action(row_y, self.width - PAD - ACTION_ZONE_W, self.width, ("refresh", "github"))
         return y + FEED_LINE_H + FEED_TITLE_GAP
 
     def _draw_stock_tile(self, idx, payload, y):
@@ -691,7 +701,7 @@ class Hud:
             self._feed_items.append(lid)
             self._register_hit(y + FEED_LINE_H // 2, url)
             y += FEED_LINE_H
-            pts = _stock_points(q.series, PAD + 6, WIDTH - PAD, y + 2, y + STOCK_CHART_H - 2)
+            pts = _stock_points(q.series, PAD + 6, self.width - PAD, y + 2, y + STOCK_CHART_H - 2)
             if pts:
                 bottom = y + STOCK_CHART_H - 2
                 poly = c.create_polygon(*(pts + [pts[-2], bottom, pts[0], bottom]),
@@ -705,7 +715,7 @@ class Hud:
 
     def _draw_range_toggle(self, idx, current, row_y):
         c = self.canvas
-        x = WIDTH - PAD
+        x = self.width - PAD
         for code in reversed(feedmodel.STOCK_RANGE_ORDER):        # draw right->left; 3M rightmost
             label = feedmodel.STOCK_RANGE_LABELS[code]
             active = (code == current)
@@ -723,9 +733,9 @@ class Hud:
     def _resize(self, wanted_h):
         sh = self.root.winfo_screenheight()
         new_h = max(HEIGHT, min(int(wanted_h), sh - self.root.winfo_y()))
-        if new_h != self.root.winfo_height():
-            self.canvas.config(height=new_h)
-            self.root.geometry("%dx%d" % (WIDTH, new_h))
+        if new_h != self.root.winfo_height() or self.width != self.root.winfo_width():
+            self.canvas.config(width=self.width, height=new_h)
+            self.root.geometry("%dx%d" % (self.width, new_h))
 
     def _feed_has_text(self, needle):
         for item_id in self._feed_items:
@@ -764,6 +774,34 @@ class Hud:
         if getattr(self, "settings", None) is None:
             self.settings = feedsettings.FeedSettingsWindow(self)
         self.settings.open()
+
+    def _toggle_width(self):
+        """Session-only toggle between narrow (WIDTH) and wide (WIDTH_WIDE). No
+        config write. Repositions the persistent header, resizes the window, and
+        redraws the feeds at the new width."""
+        self.width = WIDTH_WIDE if self.width == WIDTH else WIDTH
+        self._relayout_header()
+        self._draw()          # repaint header (clock/media/sparklines) at the new width
+        self._draw_feeds()    # reflow feeds + resize the window (via _resize)
+
+    def _relayout_header(self):
+        """Move the width-dependent persistent header items to the current width:
+        the centered clock and the media glyphs (+ their hit zones). Sparklines
+        re-right-align on the next _update_spark, which reads self.width."""
+        c = self.canvas
+        cx = self.width // 2
+        c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
+        ymedia = PAD + 4 * ROW_H + ROW_H // 2
+        gap = 44
+        c.coords(self._media_prev, cx - gap, ymedia)
+        c.coords(self._media_play, cx, ymedia)
+        c.coords(self._media_next, cx + gap, ymedia)
+        half = ACTION_ZONE_W
+        self._media_hits = [
+            (cx - gap - half, cx - gap + half, ymedia - 11, ymedia + 11, "prev"),
+            (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
+            (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
+        ]
 
     def _set_active_tab(self, key):
         self.active_tab = feedmodel.coerce_tab(key)

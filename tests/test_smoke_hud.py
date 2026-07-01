@@ -1102,5 +1102,56 @@ class TestHudHover(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudExpand(_HudTestBase):
+    def test_toggle_changes_width_and_geometry(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            self.assertEqual(hud.width, hudmod.WIDTH)
+            hud._toggle_width(); root.update_idletasks()
+            self.assertEqual(hud.width, hudmod.WIDTH_WIDE)
+            self.assertEqual(root.winfo_width(), hudmod.WIDTH_WIDE)
+            hud._toggle_width(); root.update_idletasks()
+            self.assertEqual(hud.width, hudmod.WIDTH)
+            self.assertEqual(root.winfo_width(), hudmod.WIDTH)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_expand_action_registered_and_dispatches(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(any(a == ("width",) for (_y0, _y1, _x0, _x1, a) in hud._action_hits),
+                            "no expand-button action zone")
+            import hud as hudmod
+            hud._dispatch_action(("width",)); root.update_idletasks()
+            self.assertEqual(hud.width, hudmod.WIDTH_WIDE)       # dispatch toggled it
+        finally:
+            hud.close(); root.destroy()
+
+    def test_relayout_recenters_header(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._toggle_width(); root.update_idletasks()
+            cx = hud.canvas.coords(hud._clock_text)[0]
+            self.assertEqual(cx, hudmod.WIDTH_WIDE // 2)         # clock recentered when wide
+        finally:
+            hud.close(); root.destroy()
+
+    def test_wide_reduces_truncation(self):
+        root, hud = self._make_hud([])
+        try:
+            text = "A moderately long headline that overflows the narrow width only"
+            narrow = hud._fit_px(text, 16)
+            hud._toggle_width()
+            wide = hud._fit_px(text, 16)
+            self.assertTrue(narrow.endswith("…"))                # truncated when narrow
+            self.assertEqual(wide, text)                         # full text fits when wide
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
