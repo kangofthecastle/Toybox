@@ -5,6 +5,7 @@ layout. parse_rss refuses DOCTYPE/ENTITY payloads (xml.etree is vulnerable to
 entity-expansion and there is no stdlib defusedxml)."""
 import datetime
 import json
+import math
 import re
 import xml.etree.ElementTree as ET
 
@@ -242,6 +243,56 @@ def parse_search_items(body, max_items):
             url=html if model.is_web_url(html) else "",
         ))
     return out, total
+
+
+def _finite_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def parse_stock_chart(body, symbol):
+    """Parse a Yahoo v8 chart response into a Quote, or None. NEVER raises
+    (defensive over untrusted bytes). Price prefers meta.regularMarketPrice and
+    falls back to the last finite close; change_pct is the day's move vs
+    chartPreviousClose (then previousClose), 0.0 when that is missing/zero;
+    series is the finite close list."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    try:
+        chart = data.get("chart") if isinstance(data, dict) else None
+        results = chart.get("result") if isinstance(chart, dict) else None
+        if not results:
+            return None
+        result = results[0]
+        if not isinstance(result, dict):
+            return None
+        meta = result.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        series = []
+        indicators = result.get("indicators")
+        if isinstance(indicators, dict):
+            qlist = indicators.get("quote")
+            if isinstance(qlist, list) and qlist and isinstance(qlist[0], dict):
+                closes = qlist[0].get("close")
+                if isinstance(closes, list):
+                    series = [float(c) for c in closes if _finite_num(c)]
+        price = meta.get("regularMarketPrice")
+        if not _finite_num(price):
+            price = series[-1] if series else None
+        if not _finite_num(price):
+            return None
+        price = float(price)
+        prev = meta.get("chartPreviousClose")
+        if not _finite_num(prev):
+            prev = meta.get("previousClose")
+        if _finite_num(prev) and float(prev) != 0.0:
+            change_pct = (price - float(prev)) / float(prev) * 100.0
+        else:
+            change_pct = 0.0
+        return model.Quote(symbol, price, change_pct, series)
+    except Exception:
+        return None
 
 
 def compose_github_status(repo, branch, ci_state, notif_count, ci_shown=True):
