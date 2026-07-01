@@ -412,5 +412,87 @@ class TestParseStockChart(unittest.TestCase):
             self.assertIsNone(parse.parse_stock_chart(bad, "X"), bad)
 
 
+class TestParseGeocode(unittest.TestCase):
+    def test_valid(self):
+        body = json.dumps({"results": [
+            {"name": "Boston", "latitude": 42.3584, "longitude": -71.0598}]}).encode()
+        self.assertEqual(parse.parse_geocode(body), (42.3584, -71.0598, "Boston"))
+
+    def test_empty_results_is_none(self):
+        self.assertIsNone(parse.parse_geocode(json.dumps({"results": []}).encode()))
+
+    def test_missing_results_key_is_none(self):
+        self.assertIsNone(parse.parse_geocode(json.dumps({}).encode()))
+
+    def test_non_finite_coords_is_none(self):
+        body = json.dumps({"results": [
+            {"name": "X", "latitude": "nope", "longitude": 1.0}]}).encode()
+        self.assertIsNone(parse.parse_geocode(body))
+
+    def test_missing_name_yields_empty_string(self):
+        body = json.dumps({"results": [
+            {"latitude": 1.0, "longitude": 2.0}]}).encode()
+        self.assertEqual(parse.parse_geocode(body), (1.0, 2.0, ""))
+
+    def test_garbage_is_none(self):
+        self.assertIsNone(parse.parse_geocode(b"<<not json>>"))
+
+
+class TestParseWeather(unittest.TestCase):
+    def _today_body(self):
+        return json.dumps({
+            "current": {"temperature_2m": 72.0},
+            "current_units": {"temperature_2m": "°F"},
+            "hourly": {"temperature_2m": [70.0, 71.0, 73.0, 72.0]},
+            "daily": {"temperature_2m_max": [78.0], "temperature_2m_min": [61.0]},
+        }).encode()
+
+    def test_today_uses_hourly_series_and_daily_hilo(self):
+        w = parse.parse_weather(self._today_body(), "today")
+        self.assertAlmostEqual(w.current, 72.0)
+        self.assertAlmostEqual(w.hi, 78.0)
+        self.assertAlmostEqual(w.lo, 61.0)
+        self.assertEqual(w.series, [70.0, 71.0, 73.0, 72.0])
+        self.assertEqual(w.unit, "°F")
+
+    def test_multiday_uses_daily_series_and_range_hilo(self):
+        body = json.dumps({
+            "current": {"temperature_2m": 55.0},
+            "current_units": {"temperature_2m": "°C"},
+            "hourly": {"temperature_2m": [1.0, 2.0]},
+            "daily": {"temperature_2m_max": [60.0, 65.0, 58.0],
+                      "temperature_2m_min": [40.0, 45.0, 38.0]},
+        }).encode()
+        w = parse.parse_weather(body, "3d")
+        self.assertEqual(w.series, [60.0, 65.0, 58.0])   # daily-max series
+        self.assertAlmostEqual(w.hi, 65.0)               # max of daily max
+        self.assertAlmostEqual(w.lo, 38.0)               # min of daily min
+
+    def test_missing_current_temp_is_none(self):
+        body = json.dumps({"current": {}, "daily": {}}).encode()
+        self.assertIsNone(parse.parse_weather(body, "today"))
+
+    def test_non_finite_series_values_filtered(self):
+        body = json.dumps({
+            "current": {"temperature_2m": 50.0},
+            "current_units": {"temperature_2m": "°F"},
+            "hourly": {"temperature_2m": [50.0, None, "x", 52.0]},
+            "daily": {"temperature_2m_max": [55.0], "temperature_2m_min": [45.0]},
+        }).encode()
+        w = parse.parse_weather(body, "today")
+        self.assertEqual(w.series, [50.0, 52.0])         # junk dropped
+
+    def test_missing_units_yields_empty_string(self):
+        body = json.dumps({
+            "current": {"temperature_2m": 50.0},
+            "hourly": {"temperature_2m": [50.0]},
+            "daily": {"temperature_2m_max": [55.0], "temperature_2m_min": [45.0]},
+        }).encode()
+        self.assertEqual(parse.parse_weather(body, "today").unit, "")
+
+    def test_garbage_is_none(self):
+        self.assertIsNone(parse.parse_weather(b"<<not json>>", "today"))
+
+
 if __name__ == "__main__":
     unittest.main()
