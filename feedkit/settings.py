@@ -10,7 +10,13 @@ from tkinter import ttk
 import config
 import feedkit.model as model
 
-_TYPES = ("rss", "json", "text", "github")
+_TYPES = ("rss", "json", "text", "github", "notifications", "search")
+
+_SEARCH_PRESETS = {
+    "My open PRs": "is:open is:pr author:@me",
+    "Awaiting my review": "is:open is:pr review-requested:@me",
+    "Assigned to me": "is:open assignee:@me",
+}
 
 
 class FeedSettingsWindow:
@@ -83,6 +89,9 @@ class FeedSettingsWindow:
                      ("items", "Items"), ("interval", "Interval s")],
             "github": [("title", "Title"), ("repo", "owner/name"), ("branch", "Branch"),
                        ("interval", "Interval s")],
+            "notifications": [("title", "Title"), ("items", "Items"), ("interval", "Interval s")],
+            "search": [("title", "Title"), ("query", "Query"),
+                       ("items", "Items"), ("interval", "Interval s")],
         }[ftype]
         for key, label in spec:
             row = tk.Frame(self._fields_frame); row.pack(anchor="w", pady=1)
@@ -96,7 +105,20 @@ class FeedSettingsWindow:
             crow = tk.Frame(self._fields_frame); crow.pack(anchor="w", pady=1)
             tk.Checkbutton(crow, text="CI", variable=self._show_ci).pack(side="left")
             tk.Checkbutton(crow, text="Notifications", variable=self._show_notif).pack(side="left")
+        if ftype == "search":
+            prow = tk.Frame(self._fields_frame); prow.pack(anchor="w", pady=1)
+            tk.Label(prow, text="Preset", width=10, anchor="w").pack(side="left")
+            self._preset_var = tk.StringVar(value="")
+            tk.OptionMenu(prow, self._preset_var, *_SEARCH_PRESETS,
+                          command=self._apply_search_preset).pack(side="left")
         tk.Button(self._fields_frame, text="Add feed", command=self._on_add).pack(anchor="w", pady=4)
+
+    def _apply_search_preset(self, name):
+        """Fill the Query field from a named preset so the GitHub search syntax
+        never has to be typed."""
+        query = _SEARCH_PRESETS.get(name)
+        if query and "query" in self._fields:
+            self._fields["query"].set(query)
 
     def _on_add(self):
         ftype = self._type_var.get()
@@ -114,6 +136,13 @@ class FeedSettingsWindow:
             if self._show_notif.get():
                 show.append("notifications")
             raw["show"] = show
+        elif ftype == "notifications":
+            if g("items"):
+                raw["items"] = _as_int(g("items"))
+        elif ftype == "search":
+            raw["query"] = g("query")
+            if g("items"):
+                raw["items"] = _as_int(g("items"))
         else:
             raw["url"] = g("url")
             if g("items"):
@@ -148,8 +177,14 @@ class FeedSettingsWindow:
             self._refresh_list()
 
     def _persist(self):
+        # The settings window owns feeds + the github token; persist exactly
+        # those via a scoped update so saving them can't clobber the HUD's
+        # window position or another toy's section of the shared config.
         try:
-            config.save(self.hud.CFG_PATH, self.hud.cfg)
+            config.update(self.hud.CFG_PATH, {
+                "feeds": self.hud.cfg.get("feeds", []),
+                "hud": {"github_token": self.hud.cfg["hud"].get("github_token", "")},
+            })
         except Exception:
             pass
         self.hud.manager.set_token(self.hud._github_token())
@@ -188,7 +223,7 @@ class FeedSettingsWindow:
         env_set = bool(os.environ.get("TOYBOX_GITHUB_TOKEN"))
         src = "environment (TOYBOX_GITHUB_TOKEN)" if env_set else "this field / config.json"
         tk.Label(f, text="Active token source: " + src, fg="#555").pack(anchor="w", padx=10, pady=(10, 2))
-        tk.Label(f, text="Classic PAT · scope: notifications (+ repo for private CI)",
+        tk.Label(f, text="Classic PAT · scope: notifications (+ repo for private repos)",
                  fg="#555").pack(anchor="w", padx=10)
         row = tk.Frame(f); row.pack(anchor="w", padx=10, pady=6)
         self._token_var = tk.StringVar(value=self.hud.cfg["hud"].get("github_token", ""))

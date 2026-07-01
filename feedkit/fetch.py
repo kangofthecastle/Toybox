@@ -11,7 +11,11 @@ from collections import namedtuple
 from feedkit.model import build_conditional_headers
 
 FetchResult = namedtuple(
-    "FetchResult", ["status", "body", "content_type", "etag", "last_modified", "error"])
+    "FetchResult",
+    ["status", "body", "content_type", "etag", "last_modified", "error", "poll_interval"],
+    defaults=(None,))
+
+SendResult = namedtuple("SendResult", ["status", "code", "error"], defaults=(None, None))
 
 _DEFAULT_UA = "Toybox-WebFeed/1.0"
 
@@ -36,7 +40,16 @@ def _error_word(exc):
     return "error"
 
 
-def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_bytes=1_000_000):
+def _poll_interval(response):
+    """The server's requested minimum seconds between polls (GitHub's
+    X-Poll-Interval), or None when absent / non-integer."""
+    try:
+        return int(response.headers.get("X-Poll-Interval"))
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_bytes=2_000_000):
     request_headers = {"User-Agent": _DEFAULT_UA}
     if headers:
         request_headers.update(headers)
@@ -49,10 +62,29 @@ def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_byte
                 return FetchResult("error", None, None, None, None, "too large")
             return FetchResult("ok", body, response.headers.get("Content-Type"),
                                response.headers.get("ETag"),
-                               response.headers.get("Last-Modified"), None)
+                               response.headers.get("Last-Modified"), None,
+                               _poll_interval(response))
     except urllib.error.HTTPError as exc:
         if exc.code == 304:
             return FetchResult("not_modified", None, None, etag, last_modified, None)
         return FetchResult("error", None, None, None, None, _error_word(exc))
     except (urllib.error.URLError, TimeoutError) as exc:
         return FetchResult("error", None, None, None, None, _error_word(exc))
+
+
+def send(url, method, headers=None, timeout=12):
+    """Fire a bodyless mutating request (PATCH a thread, PUT /notifications) for
+    the mark-as-read actions. Any 2xx -> SendResult('ok', code, None); failures
+    map through the same taxonomy as fetch(). TLS uses the default verifying
+    context (never weakened); no response body is read."""
+    request_headers = {"User-Agent": _DEFAULT_UA}
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, method=method, headers=request_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return SendResult("ok", response.status, None)
+    except urllib.error.HTTPError as exc:
+        return SendResult("error", exc.code, _error_word(exc))
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return SendResult("error", None, _error_word(exc))

@@ -640,8 +640,10 @@ class ClipboardApp:
             self.root.after(CAPTURE_MS, self._poll)
 
     def save_cfg(self):
+        # Persist only the clipboard's own section so a save can't clobber the
+        # HUD/pet sections or feeds/github_token written by another process.
         try:
-            config.save(CFG_PATH, self.cfg)
+            config.update(CFG_PATH, {"clipboard": self.cfg["clipboard"]})
         except Exception:
             pass
 

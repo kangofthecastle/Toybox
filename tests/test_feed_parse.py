@@ -1,5 +1,7 @@
 import unittest
+import json
 import feedkit.parse as parse
+import feedkit.model as model
 
 
 RSS = b"""<?xml version="1.0"?>
@@ -187,6 +189,174 @@ class TestComposeGithubStatus(unittest.TestCase):
         s = parse.compose_github_status("o/r", "main", "none", 4, ci_shown=False)
         self.assertEqual(s.url, "https://github.com/notifications")
         self.assertNotIn("●", s.text)        # no CI glyph when CI isn't shown
+
+
+def _notif(**over):
+    n = {"id": "1", "unread": True, "reason": "mention",
+         "updated_at": "2026-06-29T00:00:00Z",
+         "subject": {"title": "Hello", "type": "Issue",
+                     "url": "https://api.github.com/repos/o/r/issues/7"},
+         "repository": {"full_name": "o/r"}}
+    n.update(over)
+    return n
+
+
+class TestParseNotificationItems(unittest.TestCase):
+    def test_empty_list(self):
+        self.assertEqual(parse.parse_notification_items(b"[]", 5), ([], 0))
+
+    def test_non_list_json(self):
+        self.assertEqual(parse.parse_notification_items(b'{"message":"Bad creds"}', 5), ([], 0))
+
+    def test_basic_issue(self):
+        items, total = parse.parse_notification_items(json.dumps([_notif()]).encode(), 5)
+        self.assertEqual(total, 1)
+        it = items[0]
+        self.assertEqual(it.glyph, model.glyph_for("Issue"))
+        self.assertEqual(it.repo, "o/r")
+        self.assertEqual(it.number, "#7")
+        self.assertEqual(it.reason_label, "@you")
+        self.assertEqual(it.urgency, "high")
+        self.assertEqual(it.title, "Hello")
+        self.assertEqual(it.url, "https://github.com/o/r/issues/7")
+        self.assertGreater(it.updated_at, 0)
+
+    def test_null_subject_url_does_not_raise(self):
+        n = _notif(subject={"title": "Invite", "type": "RepositoryInvitation", "url": None})
+        items, total = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(total, 1)
+        self.assertEqual(items[0].number, "")
+        self.assertTrue(model.is_web_url(items[0].url))
+
+    def test_missing_subject_and_repository(self):
+        items, total = parse.parse_notification_items(
+            json.dumps([{"unread": True, "reason": "subscribed"}]).encode(), 5)
+        self.assertEqual(total, 1)
+        self.assertEqual(items[0].repo, "")
+        self.assertEqual(items[0].url, "https://github.com/notifications")
+        self.assertEqual(items[0].glyph, "◉")           # default ◉
+
+    def test_unknown_subject_type_default_glyph(self):
+        n = _notif(subject={"title": "x", "type": "Wat", "url": None})
+        items, _ = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(items[0].glyph, "◉")
+
+    def test_pull_request_number_and_url(self):
+        n = _notif(subject={"title": "PR", "type": "PullRequest",
+                            "url": "https://api.github.com/repos/o/r/pulls/34"})
+        items, _ = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(items[0].number, "#34")
+        self.assertEqual(items[0].url, "https://github.com/o/r/pull/34")
+
+    def test_non_digit_last_segment_has_no_number(self):
+        n = _notif(subject={"title": "rel", "type": "Release",
+                            "url": "https://api.github.com/repos/o/r/releases/tags/v1.2"})
+        items, _ = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(items[0].number, "")
+
+    def test_bad_updated_at_is_zero(self):
+        items, _ = parse.parse_notification_items(json.dumps([_notif(updated_at="nope")]).encode(), 5)
+        self.assertEqual(items[0].updated_at, 0.0)
+
+    def test_missing_updated_at_is_zero(self):
+        n = _notif()
+        del n["updated_at"]
+        items, _ = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(items[0].updated_at, 0.0)
+
+    def test_max_items_caps_render_but_total_counts_all(self):
+        arr = [_notif(id=str(i)) for i in range(8)]
+        items, total = parse.parse_notification_items(json.dumps(arr).encode(), 3)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(total, 8)
+
+    def test_read_filtered_out(self):
+        arr = [_notif(), _notif(unread=False)]
+        items, total = parse.parse_notification_items(json.dumps(arr).encode(), 5)
+        self.assertEqual(total, 1)
+        self.assertEqual(len(items), 1)
+
+    def test_thread_url_carried_from_top_level_url(self):
+        n = _notif(url="https://api.github.com/notifications/threads/42")
+        items, _ = parse.parse_notification_items(json.dumps([n]).encode(), 5)
+        self.assertEqual(items[0].thread_url,
+                         "https://api.github.com/notifications/threads/42")
+
+    def test_thread_url_missing_is_empty(self):
+        items, _ = parse.parse_notification_items(
+            json.dumps([{"unread": True, "reason": "subscribed"}]).encode(), 5)
+        self.assertEqual(items[0].thread_url, "")
+
+
+def _sr(**over):
+    """One /search/issues result item (a PR by default)."""
+    it = {"number": 34, "title": "Fix the thing",
+          "html_url": "https://github.com/o/app/pull/34",
+          "repository_url": "https://api.github.com/repos/o/app",
+          "user": {"login": "octocat"},
+          "updated_at": "2026-06-29T00:00:00Z",
+          "pull_request": {"url": "https://api.github.com/repos/o/app/pulls/34"}}
+    it.update(over)
+    return it
+
+
+def _sbody(items, total=None):
+    payload = {"items": items}
+    if total is not None:
+        payload["total_count"] = total
+    return json.dumps(payload).encode()
+
+
+class TestParseSearchItems(unittest.TestCase):
+    def test_non_dict_body_is_empty(self):
+        self.assertEqual(parse.parse_search_items(b"[]", 5), ([], 0))
+
+    def test_missing_items_is_empty(self):
+        self.assertEqual(parse.parse_search_items(b'{"total_count":3}', 5), ([], 0))
+
+    def test_basic_pr(self):
+        items, total = parse.parse_search_items(_sbody([_sr()], total=3), 5)
+        self.assertEqual(total, 3)
+        it = items[0]
+        self.assertEqual(it.glyph, model.glyph_for("PullRequest"))
+        self.assertEqual(it.repo, "o/app")
+        self.assertEqual(it.number, "#34")
+        self.assertEqual(it.reason_label, "@octocat")
+        self.assertEqual(it.urgency, "normal")
+        self.assertEqual(it.title, "Fix the thing")
+        self.assertEqual(it.url, "https://github.com/o/app/pull/34")
+        self.assertEqual(it.thread_url, "")
+        self.assertGreater(it.updated_at, 0)
+
+    def test_issue_uses_issue_glyph(self):
+        issue = _sr()
+        del issue["pull_request"]
+        items, _ = parse.parse_search_items(_sbody([issue]), 5)
+        self.assertEqual(items[0].glyph, model.glyph_for("Issue"))
+
+    def test_draft_pr_is_low_urgency(self):
+        items, _ = parse.parse_search_items(_sbody([_sr(draft=True)]), 5)
+        self.assertEqual(items[0].urgency, "low")
+
+    def test_missing_user_number_html(self):
+        bare = {"title": "no metadata", "repository_url": "https://api.github.com/repos/o/app"}
+        items, total = parse.parse_search_items(_sbody([bare]), 5)
+        self.assertEqual(total, 1)                       # total_count absent -> len(items)
+        it = items[0]
+        self.assertEqual(it.reason_label, "")
+        self.assertEqual(it.number, "")
+        self.assertEqual(it.url, "")                     # no html_url -> no click target
+        self.assertEqual(it.repo, "o/app")
+
+    def test_total_count_absent_falls_back_to_len(self):
+        items, total = parse.parse_search_items(_sbody([_sr(), _sr(number=35)]), 5)
+        self.assertEqual(total, 2)
+
+    def test_max_items_caps_list(self):
+        items, total = parse.parse_search_items(
+            _sbody([_sr(number=i) for i in range(8)], total=8), 3)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(total, 8)
 
 
 if __name__ == "__main__":

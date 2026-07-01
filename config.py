@@ -100,3 +100,21 @@ def save(path, cfg):
         except OSError:
             pass
         raise
+
+
+def update(path, partial):
+    """Scoped read-modify-write: load the CURRENT config from disk, overlay only
+    the keys present in `partial`, and atomically write the result. Returns the
+    merged config.
+
+    Toybox runs the HUD, clipboard, and pet as separate processes that share one
+    config.json. A whole-file `save(path, self.cfg)` from any one of them writes
+    its (possibly stale) copy of EVERY key, so it silently clobbers keys another
+    process owns -- e.g. a HUD drag-save overwriting `feeds`/`github_token` with
+    the empty values it loaded at startup. `update` fixes that: each writer
+    persists only the keys it owns (the HUD its window geometry, the settings
+    window its feeds + token, clipboard/pet their own section), merging over the
+    latest on-disk state so the other keys survive untouched."""
+    merged = _deep_merge(load(path), partial)
+    save(path, merged)
+    return merged

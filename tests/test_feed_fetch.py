@@ -22,6 +22,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/big":
             self.send_response(200); self.end_headers()
             self.wfile.write(b"x" * 5000)
+        elif self.path == "/mid":
+            self.send_response(200); self.end_headers()
+            self.wfile.write(b"x" * 1_500_000)
         elif self.path == "/boom":
             self.send_response(403)
             self.send_header("X-RateLimit-Remaining", "0")
@@ -30,6 +33,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(403)
             self.send_header("X-RateLimit-Remaining", "57")
             self.end_headers()
+        elif self.path == "/poll":
+            self.send_response(200)
+            self.send_header("X-Poll-Interval", "90")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+        elif self.path == "/pollbad":
+            self.send_response(200)
+            self.send_header("X-Poll-Interval", "soon")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+        else:
+            self.send_response(404); self.end_headers()
+
+    def do_PATCH(self):
+        if self.path == "/thread":
+            self.send_response(205); self.end_headers()
+        elif self.path == "/forbidden":
+            self.send_response(401); self.end_headers()
+        else:
+            self.send_response(404); self.end_headers()
+
+    def do_PUT(self):
+        if self.path == "/notifications":
+            self.send_response(202); self.end_headers()
         else:
             self.send_response(404); self.end_headers()
 
@@ -69,6 +98,13 @@ class TestFetch(unittest.TestCase):
         self.assertEqual(r.status, "error")
         self.assertEqual(r.error, "too large")
 
+    def test_default_cap_allows_over_1mb(self):
+        # The daily GitHub-trending RSS is ~1.2 MB; the default cap must accept a
+        # body larger than the old 1 MB limit (regression guard for the 2 MB cap).
+        r = fetch.fetch(self._url("/mid"))
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(len(r.body), 1_500_000)
+
     def test_http_403_with_zero_quota_is_rate_limited(self):
         r = fetch.fetch(self._url("/boom"))
         self.assertEqual(r.status, "error")
@@ -81,6 +117,40 @@ class TestFetch(unittest.TestCase):
 
     def test_connection_refused_is_offline(self):
         r = fetch.fetch("http://127.0.0.1:9/never", timeout=1)
+        self.assertEqual(r.status, "error")
+        self.assertEqual(r.error, "offline")
+
+    def test_poll_interval_parsed_on_200(self):
+        r = fetch.fetch(self._url("/poll"))
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.poll_interval, 90)
+
+    def test_poll_interval_none_when_absent(self):
+        r = fetch.fetch(self._url("/etag"))
+        self.assertIsNone(r.poll_interval)
+
+    def test_poll_interval_none_when_non_int(self):
+        r = fetch.fetch(self._url("/pollbad"))
+        self.assertIsNone(r.poll_interval)
+
+    def test_send_patch_2xx_is_ok(self):
+        r = fetch.send(self._url("/thread"), "PATCH")
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.code, 205)
+
+    def test_send_put_2xx_is_ok(self):
+        r = fetch.send(self._url("/notifications"), "PUT")
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(r.code, 202)
+
+    def test_send_http_error_is_error_word(self):
+        r = fetch.send(self._url("/forbidden"), "PATCH")
+        self.assertEqual(r.status, "error")
+        self.assertEqual(r.code, 401)
+        self.assertEqual(r.error, "bad token")
+
+    def test_send_connection_refused_is_offline(self):
+        r = fetch.send("http://127.0.0.1:1/x", "PUT")
         self.assertEqual(r.status, "error")
         self.assertEqual(r.error, "offline")
 

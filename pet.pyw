@@ -188,7 +188,7 @@ class Cat:
         self.cfg["pet"]["x"] = self.root.winfo_x()
         self.cfg["pet"]["y"] = self.root.winfo_y()
         try:
-            config.save(CFG_PATH, self.cfg)
+            config.update(CFG_PATH, {"pet": self.cfg["pet"]})
         except Exception:
             pass
 
@@ -259,7 +259,7 @@ class Cat:
     # --- right-click menu -----------------------------------------------
     def _save_cfg(self):
         try:
-            config.save(CFG_PATH, self.cfg)
+            config.update(CFG_PATH, {"pet": self.cfg["pet"]})
         except Exception:
             pass
 

@@ -11,10 +11,13 @@ import collections
 import time
 
 import tkinter as tk
+import tkinter.font as tkfont
+import tkinter.messagebox as tkmsg
 import winkit.window as window
 import winkit.metrics as metrics
 import config
 import webbrowser
+import timeago
 import feedkit.manager as feedmanager
 import feedkit.model as feedmodel
 
@@ -50,12 +53,23 @@ FEED_TITLE_GAP = 4        # px above each feed block
 FEED_MAX_CHARS = 30       # truncate any feed text (title or item) to fit 220px
 STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
              "pending": "#d29922", "none": "#6a6a78"}
+URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
+DISMISS_GLYPH = "✕"   # ✕  per-item mark-read
+MARKALL_GLYPH = "✓"   # ✓  header mark-all-read
+ACTION_ZONE_W = 18         # px hit target at the right edge for ✕ / ✓
 
 
 def _fit(text):
     """Truncate any feed line/title to FEED_MAX_CHARS so a long headline or repo
     name can't overflow the 220px width."""
     return text if len(text) <= FEED_MAX_CHARS else text[:FEED_MAX_CHARS - 1] + "…"
+
+
+def _repo_short(full):
+    """Bare repo name (drop the owner/), capped so a long owner can't push the
+    reason label off the right edge of the 220px tile."""
+    name = (full or "").rsplit("/", 1)[-1]
+    return name if len(name) <= 12 else name[:11] + "…"
 
 
 ALPHA_PRESETS = (1.0, 0.85, 0.60)
@@ -82,6 +96,7 @@ class Hud:
         self.CFG_PATH = CFG_PATH  # exposed for the settings window's config.save
         self.feed_state = {}      # idx -> feedmanager.FeedResult
         self._hit = []            # [(y0, y1, url)] for click-to-open (http/https only)
+        self._action_hits = []    # [(y0,y1,x0,x1,action)] x-aware dismiss/mark-all zones
         self._feed_items = []     # canvas item ids to clear on each feed redraw
         self._drain_after = None  # pending after() id so close() can cancel it
         self.settings = None      # FeedSettingsWindow singleton (Task 11)
@@ -93,6 +108,10 @@ class Hud:
             highlightthickness=0, bd=0,
         )
         self.canvas.pack(fill="both", expand=True)
+
+        # Pixel-width measurer for line 1 (emoji glyphs are double-width, so
+        # char-count truncation under-budgets and collides with the age).
+        self._feed_font_measure = tkfont.Font(root=root, family=FEED_FONT[0], size=FEED_FONT[1])
 
         # Persistent canvas items: created once, updated in place each tick
         # (no per-frame create/destroy churn -- matches the lightweight pattern).
@@ -152,6 +171,10 @@ class Hud:
 
     def _on_release(self, event):
         if not self._moved:
+            action = self._action_at(event.x, event.y)   # dismiss/mark-all zone wins over open
+            if action is not None:
+                self._do_dismiss(action)
+                return
             url = self._open_at(event.x, event.y)
             if url:
                 try:
@@ -163,6 +186,29 @@ class Hud:
         self.cfg["hud"]["x"] = self.root.winfo_x()
         self.cfg["hud"]["y"] = self.root.winfo_y()
         self._save()
+
+    def _do_dismiss(self, action):
+        """Optimistically apply a mark-read action to the rendered tile, then hand
+        it to the worker. The worker's reconcile (success) or restore (failure)
+        result overwrites this optimistic state on the next 250ms drain."""
+        kind, idx = action[0], action[1]
+        result = self.feed_state.get(idx)
+        if kind == "one":
+            thread_url = action[2]
+            if result is not None:
+                remaining = [it for it in result.items if it.thread_url != thread_url]
+                self.feed_state[idx] = result._replace(
+                    items=remaining, badge=max(0, (result.badge or 0) - 1))
+                self._draw_feeds()
+            self.manager.mark_read(idx, thread_url)
+        elif kind == "all":
+            if not tkmsg.askyesno("Mark all read?",
+                                  "Mark all notifications as read?", parent=self.root):
+                return
+            if result is not None:
+                self.feed_state[idx] = result._replace(items=[], badge=0)
+                self._draw_feeds()
+            self.manager.mark_all_read(idx)
 
     # --- menu -------------------------------------------------------------
     def _on_menu(self, event):
@@ -181,8 +227,14 @@ class Hud:
         self._save()
 
     def _save(self):
+        # Persist ONLY the HUD's own window keys via a scoped read-modify-write,
+        # so a drag / opacity / lock save can never clobber feeds, github_token,
+        # or another toy's section (config.update merges over the latest on-disk
+        # state instead of overwriting the whole file with our in-memory copy).
+        h = self.cfg["hud"]
         try:
-            config.save(CFG_PATH, self.cfg)
+            config.update(CFG_PATH, {"hud": {"x": h["x"], "y": h["y"],
+                                             "alpha": h["alpha"], "locked": h["locked"]}})
         except Exception:
             pass  # a transient write failure must never crash the HUD
 
@@ -236,24 +288,75 @@ class Hud:
         self._drain_after = self.root.after(250, self._drain_feeds)
 
     def _feed_tiles(self):
-        """Yield (title, title_url, color, lines) per configured feed. title_url is
-        the click target for the title line (None for non-github feeds); lines is a
-        list of (text, url, dim). Pulls live results from feed_state, falling back
-        to a 'loading'/error placeholder. A github tile surfaces result.error even
-        when CI itself returned ok (e.g. a bad notifications token)."""
+        """Yield (title, title_url, color, lines, header_action) per configured feed.
+        title_url is the click target for the title line (None for non-github feeds);
+        lines is a list of (text, url, dim) 3-tuples or (line1, url, color, subtitle,
+        age, dismiss) 6-tuples for notifications items. Pulls live results from
+        feed_state, falling back to a 'loading'/error placeholder. A github tile
+        surfaces result.error even when CI itself returned ok (e.g. a bad notifications
+        token)."""
         for idx, feed in enumerate(self.manager.feeds):
             title = feed.get("title") or "feed"
             if not feed.get("valid"):
-                yield (title, None, FEED_DIM, [("! " + (feed.get("error") or "invalid"), None, True)])
+                yield (title, None, FEED_DIM, [("! " + (feed.get("error") or "invalid"), None, True)], None)
                 continue
             result = self.feed_state.get(idx)
             if result is None:
-                yield (title, None, FEED_FG, [("loading…", None, True)])
+                yield (title, None, FEED_FG, [("loading…", None, True)], None)
+                continue
+            if feed["type"] == "notifications":
+                badge = result.badge or 0          # badge may be None; None>=50 would crash the drain loop
+                header = title + ("  \U0001f514 %s" % ("50+" if badge >= 50 else badge))
+                lines = []
+                if result.error == "no github_token":
+                    lines.append(("! set GitHub token in Settings", None, True))
+                elif result.error == "dismiss failed":
+                    lines.append(("! dismiss failed", None, True))
+                elif result.error and not result.items:
+                    lines.append(("! " + result.error, None, True))
+                elif result.state == "ok" and not result.items:
+                    lines.append(("inbox zero", None, True))
+                stale = result.state != "ok"
+                for it in result.items:
+                    color = FEED_DIM if stale else URGENCY_HEX.get(it.urgency, FEED_FG)
+                    age = "" if it.updated_at <= 0 else timeago.format_ago(time.time() - it.updated_at)
+                    num = (" " + it.number) if it.number else ""
+                    line1 = "%s %s%s · %s" % (it.glyph, _repo_short(it.repo), num, it.reason_label)
+                    dismiss = ("one", idx, it.thread_url) if it.thread_url else None
+                    lines.append((line1, it.url, color, it.title, age, dismiss))
+                extra = badge - len(result.items)
+                if extra > 0:
+                    lines.append(("… %d more" % extra, "https://github.com/notifications", True))
+                header_action = ("all", idx) if (result.state == "ok" and result.items) else None
+                yield (header, "https://github.com/notifications", FEED_FG, lines, header_action)
+                continue
+            if feed["type"] == "search":
+                badge = result.badge or 0           # badge may be None
+                header = title + ("  (%d)" % badge)
+                web = feedmodel.github_search_web_url(feed["query"])
+                lines = []
+                if result.error == "no github_token":
+                    lines.append(("! set GitHub token in Settings", None, True))
+                elif result.error and not result.items:
+                    lines.append(("! " + result.error, None, True))
+                elif result.state == "ok" and not result.items:
+                    lines.append(("none open", None, True))
+                stale = result.state != "ok"
+                for it in result.items:
+                    color = FEED_DIM if stale else URGENCY_HEX.get(it.urgency, FEED_FG)
+                    age = "" if it.updated_at <= 0 else timeago.format_ago(time.time() - it.updated_at)
+                    num = (" " + it.number) if it.number else ""
+                    line1 = "%s %s%s · %s" % (it.glyph, _repo_short(it.repo), num, it.reason_label)
+                    lines.append((line1, it.url, color, it.title, age, None))
+                extra = badge - len(result.items)
+                if extra > 0:
+                    lines.append(("… %d more" % extra, web, True))
+                yield (header, web, FEED_FG, lines, None)
                 continue
             if result.status is not None:                 # github tile
                 color = STATE_HEX.get(result.status.state, FEED_DIM)
                 lines = [("! " + result.error, None, True)] if result.error else []
-                yield (result.status.text, result.status.url, color, lines)
+                yield (result.status.text, result.status.url, color, lines, None)
                 continue
             dim = result.state in ("stale", "error")
             lines = [(it.text, it.url, dim) for it in result.items]
@@ -261,7 +364,7 @@ class Hud:
                 lines = [("! " + result.error, None, True)] + lines
             if not lines:
                 lines = [("(empty)", None, True)]
-            yield (title, None, FEED_FG, lines)
+            yield (title, None, FEED_FG, lines, None)
 
     def _register_hit(self, y, url):
         """Record a clickable region for the line centered at y -- but ONLY for
@@ -270,26 +373,81 @@ class Hud:
         if url and feedmodel.is_web_url(url):
             self._hit.append((y - FEED_LINE_H // 2, y + FEED_LINE_H // 2, url))
 
+    def _register_action(self, y, x0, x1, action):
+        """Record an x-aware click zone that fires a manager action (mark-read),
+        NOT a browser open. Checked before the open-URL hits, so the narrow
+        right-edge zone never opens the thread."""
+        self._action_hits.append((y - FEED_LINE_H // 2, y + FEED_LINE_H // 2, x0, x1, action))
+
+    def _action_at(self, x, y):
+        for y0, y1, x0, x1, action in self._action_hits:
+            if y0 <= y <= y1 and x0 <= x <= x1:
+                return action
+        return None
+
+    def _fit_line1(self, text, age, reserve=0):
+        """Truncate line 1 by measured pixel width so it never collides with the
+        right-aligned age (and the ✕ glyph when present, via reserve px)."""
+        m = self._feed_font_measure.measure
+        budget = WIDTH - 2 * PAD - m(age) - 8 - reserve
+        if m(text) <= budget:
+            return text
+        while text and m(text + "…") > budget:
+            text = text[:-1]
+        return text + "…"
+
     def _draw_feeds(self):
         c = self.canvas
         for item_id in self._feed_items:
             c.delete(item_id)
         self._feed_items = []
         self._hit = []
+        self._action_hits = []
         y = PAD + 3 * ROW_H + 4
-        for title, title_url, color, lines in self._feed_tiles():
+        for title, title_url, color, lines, header_action in self._feed_tiles():
             y += FEED_TITLE_GAP
             tid = c.create_text(PAD, y, anchor="w", text=_fit(title),
                                 fill=color, font=FEED_TITLE_FONT)
             self._feed_items.append(tid)
-            self._register_hit(y, title_url)            # github header is clickable
+            self._register_hit(y, title_url)            # github/notifications header is clickable
+            if header_action is not None:               # notifications: ✓ marks all read
+                mk = c.create_text(WIDTH - PAD, y, anchor="e", text=MARKALL_GLYPH,
+                                   fill=FEED_DIM, font=FEED_TITLE_FONT)
+                self._feed_items.append(mk)
+                self._register_action(y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, header_action)
             y += FEED_LINE_H
-            for text, url, dim in lines:
-                lid = c.create_text(PAD + 6, y, anchor="w", text=_fit(text),
-                                    fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
-                self._feed_items.append(lid)
-                self._register_hit(y, url)
-                y += FEED_LINE_H
+            for row in lines:
+                if len(row) == 3:                      # existing single-line path, unchanged
+                    text, url, dim = row
+                    lid = c.create_text(PAD + 6, y, anchor="w", text=_fit(text),
+                                        fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
+                    self._feed_items.append(lid)
+                    self._register_hit(y, url)
+                    y += FEED_LINE_H
+                else:                                  # len == 6: notifications 2-line item
+                    line1, url, color, subtitle, age, dismiss = row
+                    reserve = ACTION_ZONE_W if dismiss else 0
+                    l1 = c.create_text(PAD + 6, y, anchor="w",
+                                       text=self._fit_line1(line1, age, reserve),
+                                       fill=color, font=FEED_FONT)
+                    self._feed_items.append(l1)
+                    if age:
+                        age_x = WIDTH - PAD - reserve
+                        aid = c.create_text(age_x, y, anchor="e", text=age,
+                                            fill=FEED_DIM, font=FEED_FONT)
+                        self._feed_items.append(aid)
+                    if dismiss is not None:
+                        xg = c.create_text(WIDTH - PAD, y, anchor="e", text=DISMISS_GLYPH,
+                                           fill=FEED_DIM, font=FEED_FONT)
+                        self._feed_items.append(xg)
+                        self._register_action(y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, dismiss)
+                    self._register_hit(y, url)
+                    y += FEED_LINE_H
+                    l2 = c.create_text(PAD + 12, y, anchor="w", text=_fit(subtitle),
+                                       fill=FEED_DIM, font=FEED_FONT)
+                    self._feed_items.append(l2)
+                    self._register_hit(y, url)         # second band -> whole item opens the thread
+                    y += FEED_LINE_H
         self._resize(y + PAD)
 
     def _resize(self, wanted_h):
