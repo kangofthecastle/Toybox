@@ -288,6 +288,65 @@ class TestFeedSettings(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_stocks_type_in_add_dropdown(self):
+        import feedkit.settings as settings
+        self.assertIn("stocks", settings._TYPES)
+
+    def test_stocks_render_fields_has_symbols_range_tab(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("stocks")
+            hud.settings._render_fields()
+            self.assertIn("symbols", hud.settings._fields)
+            self.assertIsNotNone(hud.settings._range_var)
+            self.assertIsNotNone(hud.settings._tab_var)
+            self.assertNotIn("url", hud.settings._fields)
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_stocks_on_add_builds_symbols_range_tab_feed(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("stocks")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("Markets")
+            hud.settings._fields["symbols"].set("spy, nvda aapl")
+            hud.settings._range_var.set("1d")
+            hud.settings._tab_var.set("markets")
+            hud.settings._on_add()
+            added = hud.cfg["feeds"][-1]
+            self.assertEqual(added["type"], "stocks")
+            self.assertEqual(added["symbols"], ["SPY", "NVDA", "AAPL"])
+            self.assertEqual(added["range"], "1d")
+            self.assertEqual(added["tab"], "markets")
+            self.assertTrue(hud.manager.feeds[-1]["valid"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_rss_on_add_writes_tab_notifications_does_not(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("rss")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("R")
+            hud.settings._fields["url"].set("https://x/y")
+            hud.settings._tab_var.set("tech")
+            hud.settings._on_add()
+            self.assertEqual(hud.cfg["feeds"][-1]["tab"], "tech")
+            hud.settings._type_var.set("notifications")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("N")
+            hud.settings._on_add()
+            self.assertNotIn("tab", hud.cfg["feeds"][-1])
+            hud.close()
+        finally:
+            root.destroy()
+
 
 def _fill_of(hud, needle):
     """Fill color of the first feed canvas item whose text contains needle.

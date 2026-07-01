@@ -10,7 +10,7 @@ from tkinter import ttk
 import config
 import feedkit.model as model
 
-_TYPES = ("rss", "json", "text", "github", "notifications", "search")
+_TYPES = ("rss", "json", "text", "github", "notifications", "search", "stocks")
 
 _SEARCH_PRESETS = {
     "My open PRs": "is:open is:pr author:@me",
@@ -92,6 +92,7 @@ class FeedSettingsWindow:
             "notifications": [("title", "Title"), ("items", "Items"), ("interval", "Interval s")],
             "search": [("title", "Title"), ("query", "Query"),
                        ("items", "Items"), ("interval", "Interval s")],
+            "stocks": [("title", "Title"), ("symbols", "Symbols"), ("interval", "Interval s")],
         }[ftype]
         for key, label in spec:
             row = tk.Frame(self._fields_frame); row.pack(anchor="w", pady=1)
@@ -111,6 +112,16 @@ class FeedSettingsWindow:
             self._preset_var = tk.StringVar(value="")
             tk.OptionMenu(prow, self._preset_var, *_SEARCH_PRESETS,
                           command=self._apply_search_preset).pack(side="left")
+        if ftype == "stocks":
+            rrow = tk.Frame(self._fields_frame); rrow.pack(anchor="w", pady=1)
+            tk.Label(rrow, text="Range", width=10, anchor="w").pack(side="left")
+            self._range_var = tk.StringVar(value=model.DEFAULT_STOCK_RANGE)
+            tk.OptionMenu(rrow, self._range_var, *model.STOCK_RANGE_ORDER).pack(side="left")
+        if model.is_news_type(ftype):
+            trow = tk.Frame(self._fields_frame); trow.pack(anchor="w", pady=1)
+            tk.Label(trow, text="Tab", width=10, anchor="w").pack(side="left")
+            self._tab_var = tk.StringVar(value="global")
+            tk.OptionMenu(trow, self._tab_var, *[k for k, _ in model.NEWS_TABS]).pack(side="left")
         tk.Button(self._fields_frame, text="Add feed", command=self._on_add).pack(anchor="w", pady=4)
 
     def _apply_search_preset(self, name):
@@ -143,6 +154,9 @@ class FeedSettingsWindow:
             raw["query"] = g("query")
             if g("items"):
                 raw["items"] = _as_int(g("items"))
+        elif ftype == "stocks":
+            raw["symbols"] = model.parse_symbols(g("symbols"))
+            raw["range"] = self._range_var.get()
         else:
             raw["url"] = g("url")
             if g("items"):
@@ -152,6 +166,8 @@ class FeedSettingsWindow:
                 raw["fields"] = {"text": g("text"), "url": g("urlfield") or None}
             elif ftype == "text" and g("regex"):
                 raw["regex"] = g("regex")
+        if model.is_news_type(ftype):
+            raw["tab"] = self._tab_var.get()
         norm = model.normalize_feed(raw)
         if not norm.get("valid"):
             self._status.set(norm.get("error") or "invalid feed")
