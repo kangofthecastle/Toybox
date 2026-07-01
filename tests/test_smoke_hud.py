@@ -2039,5 +2039,41 @@ class TestHudEdgePeekReveal(_HudTestBase):
             hud.close(); root.destroy()
 
 
+class TestHudMediaHover(_HudTestBase):
+    def _center(self, hud, want):
+        for x0, x1, y0, y1, key in hud._media_hits:
+            if key == want:
+                return (x0 + x1) // 2, (y0 + y1) // 2
+        raise AssertionError("no media hit zone for %r" % want)
+
+    def test_media_glyph_accents_on_hover_and_reverts(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            cx, cy = self._center(hud, "playpause")
+            hud._set_media_hover(hud._media_at(cx, cy))
+            self.assertEqual(hud.canvas.itemcget(hud._media_play, "fill"), hudmod.ACCENT)
+            self.assertEqual(hud.canvas.itemcget(hud._media_prev, "fill"), hudmod.FG)
+            self.assertEqual(hud.canvas.itemcget(hud._media_next, "fill"), hudmod.FG)
+            hud._set_media_hover(None)                       # pointer leaves the glyph
+            self.assertEqual(hud.canvas.itemcget(hud._media_play, "fill"), hudmod.FG)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_hover_moves_between_glyphs(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            px, py = self._center(hud, "prev")
+            hud._set_media_hover(hud._media_at(px, py))
+            self.assertEqual(hud.canvas.itemcget(hud._media_prev, "fill"), hudmod.ACCENT)
+            nx, ny = self._center(hud, "next")
+            hud._set_media_hover(hud._media_at(nx, ny))
+            self.assertEqual(hud.canvas.itemcget(hud._media_next, "fill"), hudmod.ACCENT)
+            self.assertEqual(hud.canvas.itemcget(hud._media_prev, "fill"), hudmod.FG)
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

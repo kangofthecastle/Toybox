@@ -266,6 +266,7 @@ class Hud:
             (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
         ]
+        self._media_hover = None   # which media glyph is currently hover-highlighted
 
         # Now-playing band: reserved directly below the media row so the header
         # never jumps when playback starts/stops.
@@ -387,6 +388,20 @@ class Hud:
             if x0 <= x <= x1 and y0 <= y <= y1:
                 return key
         return None
+
+    def _set_media_hover(self, key):
+        """Brighten the hovered media glyph with the accent colour; revert the
+        others to FG. Cheap on <Motion> -- a no-op unless the glyph changes."""
+        if key == self._media_hover:
+            return
+        self._media_hover = key
+        for k, item in (("prev", self._media_prev),
+                        ("playpause", self._media_play),
+                        ("next", self._media_next)):
+            try:
+                self.canvas.itemconfig(item, fill=(ACCENT if k == key else FG))
+            except tk.TclError:
+                pass
 
     def _do_media(self, key):
         """Dispatch a media-control click to winkit.media (looked up as a module
@@ -855,6 +870,7 @@ class Hud:
     def _on_motion(self, event):
         self._hover_xy = (event.x, event.y)
         self._apply_hover()
+        self._set_media_hover(self._media_at(event.x, event.y))
         rec = self._scroll_line_at(event.x, event.y)
         if rec is not None:
             self._start_marquee(rec)
@@ -864,6 +880,7 @@ class Hud:
     def _on_leave(self, event):
         self._hover_xy = None
         self._apply_hover()
+        self._set_media_hover(None)
         self._stop_marquee()
 
     def _fit_px(self, text, x_start):
