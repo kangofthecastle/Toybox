@@ -928,5 +928,37 @@ class TestHudPartition(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudFitPx(_HudTestBase):
+    def test_fit_px_unit(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            m = hud._feed_font_measure.measure
+            short = "hi"
+            self.assertEqual(hud._fit_px(short, hudmod.PAD + 6), short)     # fits -> unchanged
+            long = "x" * 300
+            out = hud._fit_px(long, hudmod.PAD + 6)
+            self.assertTrue(out.endswith("…"))                             # truncated + marker
+            self.assertLessEqual(m(out), hudmod.WIDTH - hudmod.PAD - (hudmod.PAD + 6))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_long_item_line_gets_ellipsis(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        feeds = [{"type": "rss", "url": "https://x", "title": "T", "tab": "tech"}]
+        root, hud = self._make_hud(feeds)
+        try:
+            hud.active_tab = "tech"
+            hud.feed_state[0] = manager.FeedResult(
+                "ok", [Item("This is a very long headline that will not fit inside the width", "https://x/a")],
+                None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("…"))                       # ellipsis rendered
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

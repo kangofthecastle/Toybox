@@ -475,7 +475,7 @@ class Hud:
         title, title_url, color, lines, header_action = tile
         c = self.canvas
         y += FEED_TITLE_GAP
-        tid = c.create_text(PAD, y, anchor="w", text=_fit(title), fill=color, font=FEED_TITLE_FONT)
+        tid = c.create_text(PAD, y, anchor="w", text=self._fit_px(title, PAD), fill=color, font=FEED_TITLE_FONT)
         self._feed_items.append(tid)
         self._register_hit(y, title_url)
         if header_action is not None:
@@ -487,7 +487,7 @@ class Hud:
         for row in lines:
             if len(row) == 3:
                 text, url, dim = row
-                lid = c.create_text(PAD + 6, y, anchor="w", text=_fit(text),
+                lid = c.create_text(PAD + 6, y, anchor="w", text=self._fit_px(text, PAD + 6),
                                     fill=(FEED_DIM if dim else FEED_FG), font=FEED_FONT)
                 self._feed_items.append(lid)
                 self._register_hit(y, url)
@@ -510,7 +510,7 @@ class Hud:
                     self._register_action(y, WIDTH - PAD - ACTION_ZONE_W, WIDTH, dismiss)
                 self._register_hit(y, url)
                 y += FEED_LINE_H
-                l2 = c.create_text(PAD + 12, y, anchor="w", text=_fit(subtitle),
+                l2 = c.create_text(PAD + 12, y, anchor="w", text=self._fit_px(subtitle, PAD + 12),
                                    fill=FEED_DIM, font=FEED_FONT)
                 self._feed_items.append(l2)
                 self._register_hit(y, url)
@@ -535,6 +535,17 @@ class Hud:
             if y0 <= y <= y1 and x0 <= x <= x1:
                 return action
         return None
+
+    def _fit_px(self, text, x_start):
+        """Trim text with an ellipsis so it fits from x_start to the right margin
+        at FEED_FONT width (pixel-accurate, unlike the char-count _fit)."""
+        m = self._feed_font_measure.measure
+        budget = WIDTH - PAD - x_start
+        if m(text) <= budget:
+            return text
+        while text and m(text + "…") > budget:
+            text = text[:-1]
+        return text + "…"
 
     def _fit_line1(self, text, age, reserve=0):
         """Truncate line 1 by measured pixel width so it never collides with the
