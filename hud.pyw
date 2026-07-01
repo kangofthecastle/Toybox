@@ -29,7 +29,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
 HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/media/clock) + margin
-WIDTH_WIDE = 560       # the "expanded" fixed width (session-only toggle)
+WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
 ROW_H = 22
 LABEL_X = PAD
@@ -46,6 +46,7 @@ RAM_COLOR = "#ff5cc8"  # magenta
 GPU_COLOR = "#7ee787"  # green
 FONT = ("Consolas", 11)
 CLOCK_FONT = ("Consolas", 11, "bold")
+EXPAND_FONT = ("Consolas", 15, "bold")   # larger glyph for the width toggle
 MEDIA_FONT = ("Segoe UI Symbol", 12)
 MEDIA_PREV = "⏮"
 MEDIA_PLAY = "⏯"
@@ -69,7 +70,7 @@ URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
 DISMISS_GLYPH = "✕"   # ✕  per-item mark-read
 MARKALL_GLYPH = "✓"   # ✓  header mark-all-read
 RELOAD_GLYPH = "⟳"    # ⟳  refresh all feeds (right end of the header)
-EXPAND_GLYPH = "↔"    # ↔  toggle narrow(220) <-> wide(560)
+EXPAND_GLYPH = "↔"    # ↔  toggle narrow(220) <-> wide(440)
 ACTION_ZONE_W = 18         # px hit target at the right edge for ✕ / ✓
 
 
@@ -170,7 +171,7 @@ class Hud:
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
         self._clock_text = c.create_text(self.width // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
         self._expand_text = c.create_text(self.width - PAD, y3, anchor="e",
-                                          text=EXPAND_GLYPH, fill=ACCENT, font=CLOCK_FONT)
+                                          text=EXPAND_GLYPH, fill=FG, font=EXPAND_FONT)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
         self._cpu_line = c.create_line(0, 0, 0, 0, fill=CPU_COLOR, width=1, state="hidden")
         self._ram_line = c.create_line(0, 0, 0, 0, fill=RAM_COLOR, width=1, state="hidden")

@@ -1125,8 +1125,8 @@ class TestHudExpand(_HudTestBase):
             hud._draw_feeds(); root.update_idletasks()
             # no ("width",) action zone remains on the tab bar
             self.assertFalse(any(a == ("width",) for (_a, _b, _c, _d, a) in hud._action_hits))
-            # a bright (ACCENT) expand glyph exists as a persistent header item
-            self.assertEqual(hud.canvas.itemcget(hud._expand_text, "fill"), hudmod.ACCENT)
+            # a grey (FG) expand glyph exists as a persistent header item
+            self.assertEqual(hud.canvas.itemcget(hud._expand_text, "fill"), hudmod.FG)
             self.assertEqual(hud.canvas.itemcget(hud._expand_text, "text"), hudmod.EXPAND_GLYPH)
         finally:
             hud.close(); root.destroy()
@@ -1162,7 +1162,7 @@ class TestHudExpand(_HudTestBase):
     def test_wide_reduces_truncation(self):
         root, hud = self._make_hud([])
         try:
-            text = "A moderately long headline that overflows the narrow width only"
+            text = "A moderately long headline that overflows here"
             narrow = hud._fit_px(text, 16)
             hud._toggle_width()
             wide = hud._fit_px(text, 16)
