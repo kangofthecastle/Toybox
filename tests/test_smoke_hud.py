@@ -1519,6 +1519,31 @@ class TestHudNowPlaying(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_np_bar_hidden_when_source_has_no_timeline(self):
+        # Sources like foobar2000 publish no timeline (duration 0). An always-
+        # empty progress bar looks broken, so hide it -- but still show the track.
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=0.0, duration_s=0.0)
+            hud._draw_nowplaying()
+            self.assertIn("Song", hud.canvas.itemcget(hud._np_title, "text"))
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar_bg, "state"), "hidden")
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar, "state"), "hidden")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_bar_shown_when_source_has_timeline(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=60.0, duration_s=120.0)
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar_bg, "state"), "normal")
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar, "state"), "normal")
+        finally:
+            hud.close(); root.destroy()
+
     def test_layout_reserved_and_stable_across_playback(self):
         root, hud = self._make_hud([])
         try:

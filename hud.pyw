@@ -535,12 +535,19 @@ class Hud:
                 c.itemconfig(self._np_title, text="", anchor="center")
                 c.coords(self._np_title, self.width // 2, title_y)
                 c.coords(self._np_bar, left, y0, left, y1)   # zero width => blank
+                c.itemconfig(self._np_bar_bg, state="hidden")
                 return
             text = nowplaying.format_track(s.title, s.artist)
             pos = nowplaying.advance(s.position_s, time.monotonic() - s.sampled_at,
                                      s.status)
             frac = nowplaying.progress_fraction(pos, s.duration_s)
-            c.coords(self._np_bar, left, y0, left + int((right - left) * frac), y1)
+            if s.duration_s > 0:                             # source publishes a timeline -> show bar
+                c.itemconfig(self._np_bar_bg, state="normal")
+                c.itemconfig(self._np_bar, state="normal")
+                c.coords(self._np_bar, left, y0, left + int((right - left) * frac), y1)
+            else:                                            # no timeline (e.g. foobar2000) -> hide bar
+                c.itemconfig(self._np_bar_bg, state="hidden")
+                c.itemconfig(self._np_bar, state="hidden")
             c.itemconfig(self._np_title, text=text)          # FULL text; the widget edge clips overflow
             max_off = nowplaying.marquee_scroll_max(
                 self._feed_font_measure.measure(text), right - left)
