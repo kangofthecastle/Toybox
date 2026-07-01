@@ -462,5 +462,112 @@ class TestProcessStocks(unittest.TestCase):
         self.assertEqual(result.error, "offline")
 
 
+class TestProcessWeather(unittest.TestCase):
+    GEO = json.dumps({"results": [
+        {"name": "Boston", "latitude": 42.36, "longitude": -71.06}]}).encode()
+
+    def _forecast(self, current=72.0, hi=78.0, lo=61.0, series=(70.0, 72.0, 74.0)):
+        return json.dumps({
+            "current": {"temperature_2m": current},
+            "current_units": {"temperature_2m": "°F"},
+            "hourly": {"temperature_2m": list(series)},
+            "daily": {"temperature_2m_max": [hi], "temperature_2m_min": [lo]},
+        }).encode()
+
+    FEED = {"type": "weather", "city": "Boston", "units": "fahrenheit",
+            "range": "today", "tab": "global"}
+
+    def test_ok_geocode_then_forecast(self):
+        def fake(url, **kw):
+            if "geocoding-api" in url:
+                return _ok(self.GEO)
+            return _ok(self._forecast())
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "ok")
+        w = result.items[0]
+        self.assertAlmostEqual(w.current, 72.0)
+        self.assertAlmostEqual(w.hi, 78.0)
+        self.assertAlmostEqual(w.lo, 61.0)
+
+    def test_geocode_cached_not_refetched(self):
+        geo_calls = {"n": 0}
+        def fake(url, **kw):
+            if "geocoding-api" in url:
+                geo_calls["n"] += 1
+                return _ok(self.GEO)
+            return _ok(self._forecast())
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0); m.drain()
+        m._last.clear()
+        m._run_once(2000.0); m.drain()
+        self.assertEqual(geo_calls["n"], 1)          # geocoded once, cached thereafter
+
+    def test_geocode_failure_is_error(self):
+        m = manager.FeedManager(
+            [self.FEED],
+            fetch_fn=lambda u, **k: _err("offline") if "geocoding-api" in u else _ok(b"{}"))
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "error")
+        self.assertEqual(result.items, [])
+
+    def test_city_not_found_is_error(self):
+        def fake(url, **kw):
+            if "geocoding-api" in url:
+                return _ok(json.dumps({"results": []}).encode())
+            return _ok(self._forecast())
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0)
+        idx, result = m.drain()[0]
+        self.assertEqual(result.state, "error")
+
+    def test_forecast_failure_after_success_is_stale_retained(self):
+        state = {"n": 0}
+        def fake(url, **kw):
+            if "geocoding-api" in url:
+                return _ok(self.GEO)
+            state["n"] += 1
+            return _ok(self._forecast()) if state["n"] == 1 else _err("offline")
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0); m.drain()
+        m._last.clear()
+        m._run_once(2000.0)
+        idx, result = m.drain()[-1]
+        self.assertEqual(result.state, "stale")
+        self.assertEqual(result.error, "offline")
+        self.assertEqual(len(result.items), 1)       # last-good weather retained
+
+    def test_set_weather_range_updates_and_refetches(self):
+        urls = []
+        def fake(url, **kw):
+            urls.append(url)
+            if "geocoding-api" in url:
+                return _ok(self.GEO)
+            return _ok(self._forecast())
+        m = manager.FeedManager([self.FEED], fetch_fn=fake)
+        m._run_once(0.0); m.drain()
+        m.set_weather_range(0, "7d")
+        self.assertEqual(m.feeds[0]["range"], "7d")
+        m._run_once(2000.0); m.drain()
+        self.assertTrue(any("forecast_days=7" in u for u in urls))
+
+    def test_set_weather_range_ignores_unknown_and_nonweather(self):
+        m = manager.FeedManager(
+            [self.FEED, {"type": "stocks", "symbols": ["SPY"], "range": "1mo"}],
+            fetch_fn=lambda u, **k: _ok(self.GEO if "geocoding" in u
+                                        else json.dumps({
+                "current": {"temperature_2m": 1.0},
+                "current_units": {"temperature_2m": "°F"},
+                "hourly": {"temperature_2m": [1.0]},
+                "daily": {"temperature_2m_max": [2.0], "temperature_2m_min": [0.0]}}).encode()))
+        m.set_weather_range(0, "zzz")
+        self.assertEqual(m.feeds[0]["range"], "today")   # unknown code -> unchanged
+        m.set_weather_range(1, "7d")
+        self.assertEqual(m.feeds[1].get("range"), "1mo") # non-weather idx -> unchanged
+        m.set_weather_range(99, "7d")                    # out of range -> no crash
+
+
 if __name__ == "__main__":
     unittest.main()
