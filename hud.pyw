@@ -131,6 +131,24 @@ def edge_for(x, y, w, h, sw, sh, threshold):
     return best
 
 
+def docked_geometry(edge, x, y, w, h, sw, sh, revealed, lip):
+    """Tk geometry string "WxH+X+Y" for a window docked at `edge`. When revealed
+    it pins flush to that edge; when hidden it slides off-screen leaving `lip` px
+    visible. The cross-axis coordinate is preserved. An unknown edge is a no-op
+    (keeps the current x, y). Negative offsets format as +-N, which Tk accepts
+    (same convention as the drag handler)."""
+    nx, ny = x, y
+    if edge == "left":
+        nx = 0 if revealed else lip - w
+    elif edge == "right":
+        nx = sw - w if revealed else sw - lip
+    elif edge == "top":
+        ny = 0 if revealed else lip - h
+    elif edge == "bottom":
+        ny = sh - h if revealed else sh - lip
+    return "%dx%d+%d+%d" % (w, h, nx, ny)
+
+
 def _repo_short(full):
     """Bare repo name (drop the owner/), capped so a long owner can't push the
     reason label off the right edge of the 220px tile."""

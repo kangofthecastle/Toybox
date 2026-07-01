@@ -1859,5 +1859,50 @@ class TestHudEdgeFor(unittest.TestCase):
         self.assertIsNone(hudmod.edge_for(25, 25, self.W, self.H, self.SW, self.SH, self.T))
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudDockedGeometry(unittest.TestCase):
+    # screen 1920x1080, window 220x134 at x=50 y=300, lip 6 px.
+    SW, SH, W, H, X, Y, LIP = 1920, 1080, 220, 134, 50, 300, 6
+
+    def _geo(self, edge, revealed):
+        import hud as hudmod
+        return hudmod.docked_geometry(edge, self.X, self.Y, self.W, self.H,
+                                      self.SW, self.SH, revealed, self.LIP)
+
+    def test_left_hidden_leaves_lip(self):
+        # X = lip - w = 6 - 220 = -214; y preserved.
+        self.assertEqual(self._geo("left", False), "220x134+-214+300")
+
+    def test_left_revealed_pins_to_zero(self):
+        self.assertEqual(self._geo("left", True), "220x134+0+300")
+
+    def test_right_hidden_leaves_lip(self):
+        # X = sw - lip = 1914; y preserved.
+        self.assertEqual(self._geo("right", False), "220x134+1914+300")
+
+    def test_right_revealed_pins_to_edge(self):
+        # X = sw - w = 1700.
+        self.assertEqual(self._geo("right", True), "220x134+1700+300")
+
+    def test_top_hidden_leaves_lip(self):
+        # Y = lip - h = 6 - 134 = -128; x preserved.
+        self.assertEqual(self._geo("top", False), "220x134+50+-128")
+
+    def test_top_revealed_pins_to_zero(self):
+        self.assertEqual(self._geo("top", True), "220x134+50+0")
+
+    def test_bottom_hidden_leaves_lip(self):
+        # Y = sh - lip = 1074.
+        self.assertEqual(self._geo("bottom", False), "220x134+50+1074")
+
+    def test_bottom_revealed_pins_to_edge(self):
+        # Y = sh - h = 946.
+        self.assertEqual(self._geo("bottom", True), "220x134+50+946")
+
+    def test_unknown_edge_keeps_position(self):
+        # a None/garbage edge is a no-op: keep the window where it is.
+        self.assertEqual(self._geo(None, False), "220x134+50+300")
+
+
 if __name__ == "__main__":
     unittest.main()
