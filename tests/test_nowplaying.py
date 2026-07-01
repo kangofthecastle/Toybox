@@ -63,6 +63,61 @@ class TestFormatTrack(unittest.TestCase):
         self.assertEqual(nowplaying.format_track("  Song ", " Band "), "Song — Band")
 
 
+class TestFormatClock(unittest.TestCase):
+    def test_zero(self):
+        self.assertEqual(nowplaying.format_clock(0), "0:00")
+
+    def test_seconds_pad(self):
+        self.assertEqual(nowplaying.format_clock(5), "0:05")
+
+    def test_minutes_seconds(self):
+        self.assertEqual(nowplaying.format_clock(83), "1:23")
+
+    def test_ten_minutes(self):
+        self.assertEqual(nowplaying.format_clock(600), "10:00")
+
+    def test_truncates_fraction(self):
+        self.assertEqual(nowplaying.format_clock(83.9), "1:23")
+
+    def test_hours(self):
+        self.assertEqual(nowplaying.format_clock(3661), "1:01:01")
+
+    def test_exact_hour(self):
+        self.assertEqual(nowplaying.format_clock(3600), "1:00:00")
+
+    def test_negative_is_zero(self):
+        self.assertEqual(nowplaying.format_clock(-30), "0:00")
+
+    def test_bad_input_is_zero(self):
+        self.assertEqual(nowplaying.format_clock(None), "0:00")
+
+
+class TestSeekTargetSeconds(unittest.TestCase):
+    def test_left_edge_is_zero(self):
+        self.assertAlmostEqual(nowplaying.seek_target_seconds(40, 40, 200, 120.0), 0.0)
+
+    def test_right_edge_is_duration(self):
+        self.assertAlmostEqual(nowplaying.seek_target_seconds(200, 40, 200, 120.0), 120.0)
+
+    def test_midpoint_is_half(self):
+        self.assertAlmostEqual(nowplaying.seek_target_seconds(120, 40, 200, 120.0), 60.0)
+
+    def test_left_of_bar_clamps_to_zero(self):
+        self.assertAlmostEqual(nowplaying.seek_target_seconds(10, 40, 200, 120.0), 0.0)
+
+    def test_right_of_bar_clamps_to_duration(self):
+        self.assertAlmostEqual(nowplaying.seek_target_seconds(999, 40, 200, 120.0), 120.0)
+
+    def test_nonpositive_duration_is_zero(self):
+        self.assertEqual(nowplaying.seek_target_seconds(120, 40, 200, 0.0), 0.0)
+
+    def test_degenerate_span_is_zero(self):
+        self.assertEqual(nowplaying.seek_target_seconds(120, 200, 200, 120.0), 0.0)
+
+    def test_bad_input_is_zero(self):
+        self.assertEqual(nowplaying.seek_target_seconds(None, None, None, None), 0.0)
+
+
 class TestNowPlayingRecord(unittest.TestCase):
     def test_fields_in_order(self):
         s = nowplaying.NowPlaying("t", "a", "playing", 1.0, 2.0, 3.0)
@@ -91,6 +146,16 @@ class TestReadSmoke(unittest.TestCase):
         # Calling twice (re-entrant RoInitialize path) must also never raise.
         nowplaying.read()
         nowplaying.read()
+
+
+class TestSeekSmoke(unittest.TestCase):
+    def test_seek_never_raises_and_returns_bool(self):
+        # On any machine (no session / no timeline / WinRT missing): returns a
+        # bool and never raises. Cannot assert an effect without live playback.
+        self.assertIsInstance(nowplaying.seek(30.0), bool)
+
+    def test_seek_bad_input_returns_false(self):
+        self.assertIs(nowplaying.seek(None), False)
 
 
 class TestMarqueeScrollMax(unittest.TestCase):

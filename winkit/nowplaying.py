@@ -78,6 +78,44 @@ def marquee_step(offset, max_off, pause, step=2, end_pause=10):
     return offset, 0
 
 
+def format_clock(seconds):
+    """A media-player time stamp: 'M:SS', or 'H:MM:SS' once past an hour. Seconds
+    are truncated (83.9 -> '1:23'); negatives and non-numbers render '0:00'."""
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return "0:00"
+    if total < 0:
+        total = 0
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return "%d:%02d:%02d" % (h, m, s)
+    return "%d:%02d" % (m, s)
+
+
+def seek_target_seconds(x, bar_left, bar_right, duration_s):
+    """Seconds to seek to for a click at pixel `x` on a progress bar spanning
+    [bar_left, bar_right]. The fraction is clamped to [0, 1], so clicks past
+    either end pin to 0/duration. Returns 0.0 for a non-positive duration, a
+    degenerate span, or any non-numeric input. NEVER raises."""
+    try:
+        d = float(duration_s)
+        left = float(bar_left)
+        right = float(bar_right)
+        px = float(x)
+    except (TypeError, ValueError):
+        return 0.0
+    if d <= 0 or right <= left:
+        return 0.0
+    frac = (px - left) / (right - left)
+    if frac <= 0:
+        return 0.0
+    if frac >= 1:
+        return d
+    return frac * d
+
+
 # --- WinRT SMTC reader (guarded; never raises) ---------------------------
 import ctypes
 import time
@@ -176,6 +214,92 @@ def read():
         return _read_impl()
     except Exception:
         return None
+
+
+def seek(position_s):
+    """Best-effort seek of the active SMTC session to `position_s` seconds.
+    Returns True if the change-position request was dispatched, else False.
+    NEVER raises. A source without a seekable timeline (e.g. foobar2000) just
+    returns without effect -- the HUD only offers seeking when duration > 0."""
+    try:
+        return _seek_impl(position_s)
+    except Exception:
+        return False
+
+
+def _change_position(session, ticks):
+    """Call session vtable slot 23 -- TryChangePlaybackPositionAsync(Int64 ticks,
+    out IAsyncOperation<bool>**). The slot follows the same live-anchored ABI as
+    read()'s 6-9 (get_SourceAppUserModelId(6) .. GetPlaybackInfo(9), then the
+    Try* methods run 10..; ChangePlaybackPosition is the 14th Try*). A wrong slot
+    access-violates -- caught by seek()'s blanket except -- so this cannot be
+    unit-tested without a seekable session. Returns (hresult, op_pointer)."""
+    vtbl = ctypes.cast(session, ctypes.POINTER(ctypes.c_void_p))[0]
+    fn_addr = ctypes.cast(vtbl, ctypes.POINTER(ctypes.c_void_p))[23]
+    proto = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p,
+                               ctypes.c_int64, ctypes.c_void_p)
+    op = ctypes.c_void_p()
+    hr = proto(fn_addr)(session, ctypes.c_int64(ticks), ctypes.byref(op))
+    return hr, op
+
+
+def _seek_impl(position_s):
+    ticks = int(max(0.0, float(position_s)) * _TICKS_PER_S)
+    combase = ctypes.WinDLL("combase.dll")
+    combase.WindowsCreateString.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    combase.WindowsDeleteString.argtypes = [ctypes.c_void_p]
+    combase.RoInitialize.argtypes = [ctypes.c_int]
+    combase.RoGetActivationFactory.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    combase.RoInitialize(_RO_INIT_MULTITHREADED)   # RPC_E_CHANGED_MODE is fine
+
+    cls = ctypes.c_void_p()
+    if combase.WindowsCreateString(_MANAGER_CLASS, len(_MANAGER_CLASS),
+                                   ctypes.byref(cls)) != 0 or not cls.value:
+        return False
+    factory = ctypes.c_void_p()
+    manager = ctypes.c_void_p()
+    session = ctypes.c_void_p()
+    info = ctypes.c_void_p()
+    op = None
+    try:
+        iid = _guid(_IID_MANAGER_STATICS)
+        if combase.RoGetActivationFactory(
+                cls, ctypes.byref(iid), ctypes.byref(factory)) != 0 or not factory.value:
+            return False
+        rop = ctypes.c_void_p()
+        if _vcall(factory, 6, ctypes.byref(rop)) != 0 or not rop.value:
+            return False
+        try:
+            manager = _await(rop, time.monotonic() + 1.0)
+        finally:
+            _release(rop)
+        if not manager or not manager.value:
+            return False
+        if _vcall(manager, 6, ctypes.byref(session)) != 0 or not session.value:
+            return False
+        hr, op = _change_position(session, ticks)
+        if hr != 0 or not op or not op.value:
+            return False
+        # Drive the async to completion (bounded) so the seek is actually issued;
+        # the bool result is ignored -- dispatch is all the HUD needs.
+        iid2 = _guid(_IID_ASYNC_INFO)
+        if _vcall(op, 0, ctypes.byref(iid2), ctypes.byref(info)) == 0 and info.value:
+            deadline = time.monotonic() + 1.0
+            status = ctypes.c_int(_ASYNC_STARTED)
+            while time.monotonic() < deadline:
+                if _vcall(info, 7, ctypes.byref(status)) != 0 or status.value != _ASYNC_STARTED:
+                    break
+                time.sleep(0.01)
+        return True
+    finally:
+        combase.WindowsDeleteString(cls)
+        _release(info)
+        if op:
+            _release(op)
+        for p in (session, manager, factory):
+            _release(p)
 
 
 def _read_impl():
