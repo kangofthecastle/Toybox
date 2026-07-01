@@ -38,5 +38,41 @@ class TestCpuPercent(unittest.TestCase):
         self.assertEqual(cpu_percent((0, 0, 0), (200, 100, 0)), 0.0)
 
 
+from sysmetrics import gpu_percent
+
+
+class TestGpuPercent(unittest.TestCase):
+    # instance names mimic PDH: "..._eng_N_engtype_<Type>"
+    def _n(self, engtype, eng=0):
+        return "pid_100_luid_0x0_0x1_phys_0_eng_%d_engtype_%s" % (eng, engtype)
+
+    def test_single_engine(self):
+        self.assertAlmostEqual(gpu_percent([(self._n("3D"), 40.0)]), 40.0)
+
+    def test_sums_within_a_type(self):
+        # two Copy engines: 30 + 25 = 55
+        pairs = [(self._n("Copy", 13), 30.0), (self._n("Copy", 14), 25.0)]
+        self.assertAlmostEqual(gpu_percent(pairs), 55.0)
+
+    def test_max_across_types_wins(self):
+        pairs = [(self._n("3D"), 40.0),
+                 (self._n("Copy", 13), 30.0), (self._n("Copy", 14), 25.0)]  # Copy=55 > 3D=40
+        self.assertAlmostEqual(gpu_percent(pairs), 55.0)
+
+    def test_clamped_to_100(self):
+        pairs = [(self._n("3D", 0), 60.0), (self._n("3D", 1), 60.0)]  # 120 -> 100
+        self.assertAlmostEqual(gpu_percent(pairs), 100.0)
+
+    def test_empty_is_none(self):
+        self.assertIsNone(gpu_percent([]))
+
+    def test_instances_without_engtype_are_ignored(self):
+        self.assertIsNone(gpu_percent([("pid_1_luid_no_marker", 99.0)]))
+
+    def test_mixed_ignores_non_engtype(self):
+        pairs = [("no_marker_here", 99.0), (self._n("3D"), 10.0)]
+        self.assertAlmostEqual(gpu_percent(pairs), 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()
