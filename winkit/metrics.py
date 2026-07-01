@@ -100,6 +100,8 @@ _pdh.PdhGetFormattedCounterArrayW.restype = wintypes.DWORD
 _pdh.PdhGetFormattedCounterArrayW.argtypes = [
     ctypes.c_void_p, wintypes.DWORD,
     ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+_pdh.PdhCloseQuery.restype = wintypes.DWORD
+_pdh.PdhCloseQuery.argtypes = [ctypes.c_void_p]
 
 
 class GpuSampler:
@@ -119,6 +121,7 @@ class GpuSampler:
                 return
             hc = ctypes.c_void_p()
             if _pdh.PdhAddEnglishCounterW(hq, _GPU_COUNTER_PATH, 0, ctypes.byref(hc)) != 0:
+                _pdh.PdhCloseQuery(hq)
                 return
             _pdh.PdhCollectQueryData(hq)   # baseline for the rate counter
             self._query = hq
