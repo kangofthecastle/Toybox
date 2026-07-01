@@ -646,5 +646,30 @@ class TestHudSearchRendering(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudGpuRow(_HudTestBase):
+    def _texts(self, hud):
+        return [hud.canvas.itemcget(i, "text") for i in hud.canvas.find_all()
+                if hud.canvas.type(i) == "text"]
+
+    def test_gpu_row_shows_percent(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.gpu = 42.0
+            hud._draw()
+            self.assertTrue(any("GPU" in t and "42" in t for t in self._texts(hud)))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_gpu_row_degrades_when_none(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.gpu = None
+            hud._draw()
+            self.assertEqual(hud.canvas.itemcget(hud._gpu_text, "text"), "GPU  --%")
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

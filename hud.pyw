@@ -27,7 +27,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-HEIGHT = 96
+HEIGHT = 112          # 4 header rows (CPU/RAM/GPU/clock) + margin
 PAD = 10
 ROW_H = 22
 LABEL_X = PAD
@@ -41,6 +41,7 @@ FG = "#d8d8e0"         # light text
 DIM = "#6a6a78"        # clock / faint text
 CPU_COLOR = "#33d6ff"  # cyan
 RAM_COLOR = "#ff5cc8"  # magenta
+GPU_COLOR = "#7ee787"  # green
 FONT = ("Consolas", 11)
 CLOCK_FONT = ("Consolas", 11, "bold")
 
@@ -90,6 +91,9 @@ class Hud:
         self.ram_hist = collections.deque(maxlen=HISTORY)
         self.cpu = 0.0
         self.ram = 0.0
+        self.gpu_sampler = metrics.GpuSampler()
+        self.gpu_hist = collections.deque(maxlen=HISTORY)
+        self.gpu = None
         self._drag_dx = 0
         self._drag_dy = 0
         self._moved = False
@@ -119,9 +123,11 @@ class Hud:
         c = self.canvas
         y1 = PAD + ROW_H // 2
         y2 = PAD + ROW_H + ROW_H // 2
-        y3 = PAD + 2 * ROW_H + ROW_H // 2
+        ygpu = PAD + 2 * ROW_H + ROW_H // 2
+        y3 = PAD + 3 * ROW_H + ROW_H // 2
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
+        self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
         self._clock_text = c.create_text(WIDTH // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
         # Reload control: a ⟳ at the right end of the clock row. Click it to
         # refetch every feed (also re-reads config.json, so token/feed edits apply
@@ -131,8 +137,10 @@ class Hud:
         self._reload_box = (WIDTH - PAD - ACTION_ZONE_W, y3 - 10, WIDTH, y3 + 10)
         self._cpu_line = c.create_line(0, 0, 0, 0, fill=CPU_COLOR, width=1, state="hidden")
         self._ram_line = c.create_line(0, 0, 0, 0, fill=RAM_COLOR, width=1, state="hidden")
+        self._gpu_line = c.create_line(0, 0, 0, 0, fill=GPU_COLOR, width=1, state="hidden")
         self._cpu_band = (PAD + 1, PAD + ROW_H - 1)
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
+        self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
@@ -264,6 +272,9 @@ class Hud:
         self.ram = metrics.ram_percent()
         self.cpu_hist.append(self.cpu)
         self.ram_hist.append(self.ram)
+        self.gpu = self.gpu_sampler.sample()
+        if self.gpu is not None:
+            self.gpu_hist.append(self.gpu)
         self._draw()
         self.root.after(1000, self.tick)
 
@@ -271,9 +282,14 @@ class Hud:
         c = self.canvas
         c.itemconfig(self._cpu_text, text=f"CPU {self.cpu:3.0f}%")
         c.itemconfig(self._ram_text, text=f"RAM {self.ram:3.0f}%")
+        if self.gpu is None:
+            c.itemconfig(self._gpu_text, text="GPU  --%", fill=DIM)
+        else:
+            c.itemconfig(self._gpu_text, text=f"GPU {self.gpu:3.0f}%", fill=FG)
         c.itemconfig(self._clock_text, text=time.strftime("%H:%M:%S"))
         self._update_spark(self._cpu_line, self.cpu_hist, self._cpu_band)
         self._update_spark(self._ram_line, self.ram_hist, self._ram_band)
+        self._update_spark(self._gpu_line, self.gpu_hist, self._gpu_band)
 
     def _update_spark(self, line_id, hist, band):
         """Update a scrolling polyline of the last HISTORY samples (each 0..100),
@@ -423,7 +439,7 @@ class Hud:
         self._feed_items = []
         self._hit = []
         self._action_hits = []
-        y = PAD + 3 * ROW_H + 4
+        y = PAD + 4 * ROW_H + 4
         for title, title_url, color, lines, header_action in self._feed_tiles():
             y += FEED_TITLE_GAP
             tid = c.create_text(PAD, y, anchor="w", text=_fit(title),
