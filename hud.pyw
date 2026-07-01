@@ -128,7 +128,11 @@ class Hud:
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
-        for w in (root, self.canvas):
+        # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
+        # whole window, and a canvas's bindtags already include its toplevel. Binding
+        # on both root and the canvas would fire each handler twice for one click
+        # (e.g. opening a feed link in two browser tabs).
+        for w in (self.canvas,):
             w.bind("<Button-1>", self._on_press)
             w.bind("<B1-Motion>", self._on_drag)
             w.bind("<ButtonRelease-1>", self._on_release)

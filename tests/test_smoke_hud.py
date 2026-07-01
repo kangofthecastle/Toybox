@@ -106,6 +106,20 @@ class TestHudClickAndMenu(_HudTestBase):
         finally:
             root.destroy()
 
+    def test_click_events_bound_to_canvas_only(self):
+        # Regression: binding the mouse events to BOTH root and the canvas makes a
+        # single canvas click fire _on_release twice (a canvas's bindtags include
+        # its toplevel), which opened the URL in two browser tabs. The events must
+        # be bound to the canvas only.
+        root, hud = self._make_hud([])
+        try:
+            for seq in ("<ButtonRelease-1>", "<Button-1>", "<B1-Motion>", "<Button-3>"):
+                self.assertEqual(hud.root.bind(seq), "", "%s must not be bound on root" % seq)
+                self.assertNotEqual(hud.canvas.bind(seq), "", "%s must be bound on canvas" % seq)
+            hud.close()
+        finally:
+            root.destroy()
+
     def test_non_http_url_is_never_clickable(self):
         import feedkit.manager as manager
         from feedkit.model import Item
