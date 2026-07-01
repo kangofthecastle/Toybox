@@ -1,5 +1,54 @@
 """Fixed-drive free-space sensor + pure formatting helpers for the HUD's
 one-line disk row. Guarded ctypes on kernel32 -- never raises. Pure stdlib."""
+import ctypes
+import shutil
+import string
+
+try:
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.GetDriveTypeW.argtypes = [ctypes.c_wchar_p]
+    _kernel32.GetDriveTypeW.restype = ctypes.c_uint
+except Exception:
+    _kernel32 = None   # non-Windows / load failure: enumeration yields []
+
+DRIVE_FIXED = 3
+
+
+def _drive_type(root):
+    """Single ctypes call (the test seam). Returns the Win32 drive-type code, or
+    -1 on any failure so the caller simply skips that letter."""
+    if _kernel32 is None:
+        return -1
+    try:
+        return _kernel32.GetDriveTypeW(root)
+    except Exception:
+        return -1
+
+
+def fixed_drives():
+    """Local fixed drives as 'C:' strings, in A..Z order. Never raises; any
+    failure yields the drives found so far (possibly [])."""
+    drives = []
+    try:
+        for letter in string.ascii_uppercase:
+            if _drive_type("%s:\\" % letter) == DRIVE_FIXED:
+                drives.append("%s:" % letter)
+    except Exception:
+        pass
+    return drives
+
+
+def usage():
+    """(letter, free_bytes, total_bytes) per fixed drive via shutil.disk_usage,
+    guarded per drive so one unreadable volume can't sink the row. Never raises."""
+    out = []
+    for letter in fixed_drives():
+        try:
+            u = shutil.disk_usage(letter + "\\")
+            out.append((letter, int(u.free), int(u.total)))
+        except Exception:
+            pass
+    return out
 
 
 def human_bytes(n):

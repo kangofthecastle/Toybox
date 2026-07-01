@@ -58,5 +58,32 @@ class TestFormatDiskRow(unittest.TestCase):
         self.assertTrue(out.endswith("…"))
 
 
+class TestEnumerationSmoke(unittest.TestCase):
+    def test_fixed_drives_returns_list_never_raises(self):
+        drives = diskinfo.fixed_drives()
+        self.assertIsInstance(drives, list)
+        for d in drives:
+            self.assertIsInstance(d, str)
+            self.assertTrue(d.endswith(":"))
+
+    def test_usage_returns_well_formed_tuples_never_raises(self):
+        rows = diskinfo.usage()
+        self.assertIsInstance(rows, list)
+        for row in rows:
+            self.assertEqual(len(row), 3)
+            letter, free, total = row
+            self.assertTrue(letter.endswith(":"))
+            self.assertIsInstance(free, int)
+            self.assertIsInstance(total, int)
+            self.assertGreaterEqual(free, 0)
+            self.assertGreaterEqual(total, 0)
+
+    def test_row_renders_from_live_usage(self):
+        # end-to-end: whatever real drives exist format to a short one-liner.
+        out = diskinfo.format_disk_row(diskinfo.usage(), 26)
+        self.assertIsInstance(out, str)
+        self.assertLessEqual(len(out), 26)
+
+
 if __name__ == "__main__":
     unittest.main()
