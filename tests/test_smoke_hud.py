@@ -1171,6 +1171,25 @@ class TestHudExpand(_HudTestBase):
         finally:
             hud.close(); root.destroy()
 
+    def test_media_row_above_clock_row(self):
+        root, hud = self._make_hud([])
+        try:
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            clock_y = hud.canvas.coords(hud._clock_text)[1]
+            self.assertLess(media_y, clock_y)                # media on top, clock underneath
+            self.assertEqual(hud.canvas.coords(hud._expand_text)[1], clock_y)  # expand shares clock row
+        finally:
+            hud.close(); root.destroy()
+
+    def test_media_stays_above_clock_after_toggle(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._toggle_width(); root.update_idletasks()
+            self.assertLess(hud.canvas.coords(hud._media_play)[1],
+                            hud.canvas.coords(hud._clock_text)[1])   # order preserved when wide
+        finally:
+            hud.close(); root.destroy()
+
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
 class TestHudMarquee(_HudTestBase):
@@ -1188,6 +1207,22 @@ class TestHudMarquee(_HudTestBase):
             "ok", [Item("This headline is far too long to fit within the narrow hud width for sure",
                         "https://t/a")], None, None)
         hud._draw_feeds(); root.update_idletasks()
+
+    def test_draw_feeds_and_close_while_marquee_active_no_crash(self):
+        # Regression: _draw_feeds deletes the marquee's canvas item, then calls
+        # _stop_marquee -> canvas.coords(deleted) == [] -> [1] IndexError crash.
+        root, hud = self._make_hud(self._long_feed())
+        try:
+            self._draw_long(hud, root)
+            rec = hud._scroll_lines[0]
+            hud._on_motion(self._evt(60, (rec["y0"] + rec["y1"]) // 2))
+            self.assertIsNotNone(hud._marquee)
+            hud._draw_feeds()                 # deletes items then _stop_marquee -> must not raise
+            root.update_idletasks()
+            self.assertIsNone(hud._marquee)   # cleared, not left stale
+            hud.close()                       # must not re-crash on a stale marquee
+        finally:
+            root.destroy()
 
     def test_drain_without_new_data_does_not_redraw(self):
         root, hud = self._make_hud(self._long_feed())

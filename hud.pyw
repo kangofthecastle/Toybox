@@ -28,7 +28,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/clock/media) + margin
+HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/media/clock) + margin
 WIDTH_WIDE = 560       # the "expanded" fixed width (session-only toggle)
 PAD = 10
 ROW_H = 22
@@ -164,7 +164,7 @@ class Hud:
         y1 = PAD + ROW_H // 2
         y2 = PAD + ROW_H + ROW_H // 2
         ygpu = PAD + 2 * ROW_H + ROW_H // 2
-        y3 = PAD + 3 * ROW_H + ROW_H // 2
+        y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand: row 5 (under the media controls)
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
@@ -179,7 +179,7 @@ class Hud:
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
         self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
-        ymedia = PAD + 4 * ROW_H + ROW_H // 2
+        ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media controls: row 4 (above the clock)
         cx = self.width // 2
         gap = 44
         self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
@@ -701,7 +701,7 @@ class Hud:
             c.delete(self._hover_item)
             self._hover_item = None
         self._hover_rect = None
-        y = PAD + 5 * ROW_H + 4                   # below the 5-row header (CPU/RAM/GPU/clock/media)
+        y = PAD + 5 * ROW_H + 4                   # below the 5-row header (CPU/RAM/GPU/media/clock)
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
                 if self.manager.feeds[i].get("tab") == self.active_tab]
@@ -871,7 +871,7 @@ class Hud:
         c = self.canvas
         cx = self.width // 2
         c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
-        ymedia = PAD + 4 * ROW_H + ROW_H // 2
+        ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media row 4 (above clock)
         gap = 44
         c.coords(self._media_prev, cx - gap, ymedia)
         c.coords(self._media_play, cx, ymedia)
@@ -882,7 +882,7 @@ class Hud:
             (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
         ]
-        y3 = PAD + 3 * ROW_H + ROW_H // 2
+        y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand row 5 (under media)
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
 
