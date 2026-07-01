@@ -22,6 +22,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/big":
             self.send_response(200); self.end_headers()
             self.wfile.write(b"x" * 5000)
+        elif self.path == "/mid":
+            self.send_response(200); self.end_headers()
+            self.wfile.write(b"x" * 1_500_000)
         elif self.path == "/boom":
             self.send_response(403)
             self.send_header("X-RateLimit-Remaining", "0")
@@ -94,6 +97,13 @@ class TestFetch(unittest.TestCase):
         r = fetch.fetch(self._url("/big"), max_bytes=1000)
         self.assertEqual(r.status, "error")
         self.assertEqual(r.error, "too large")
+
+    def test_default_cap_allows_over_1mb(self):
+        # The daily GitHub-trending RSS is ~1.2 MB; the default cap must accept a
+        # body larger than the old 1 MB limit (regression guard for the 2 MB cap).
+        r = fetch.fetch(self._url("/mid"))
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(len(r.body), 1_500_000)
 
     def test_http_403_with_zero_quota_is_rate_limited(self):
         r = fetch.fetch(self._url("/boom"))

@@ -49,7 +49,7 @@ def _poll_interval(response):
         return None
 
 
-def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_bytes=1_000_000):
+def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_bytes=2_000_000):
     request_headers = {"User-Agent": _DEFAULT_UA}
     if headers:
         request_headers.update(headers)
