@@ -1431,5 +1431,47 @@ class TestHudMarquee(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudDiskRow(_HudTestBase):
+    def test_disk_row_renders_and_sits_between_gpu_and_media(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.disk = [("C:", 312 * 1024**3, 500 * 1024**3)]
+            hud._draw()
+            self.assertIn("C 312G", hud.canvas.itemcget(hud._disk_text, "text"))
+            gpu_y = hud.canvas.coords(hud._gpu_text)[1]
+            disk_y = hud.canvas.coords(hud._disk_text)[1]
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            clock_y = hud.canvas.coords(hud._clock_text)[1]
+            self.assertLess(gpu_y, disk_y)      # disk below GPU
+            self.assertLess(disk_y, media_y)    # disk above media
+            self.assertLess(media_y, clock_y)   # media still above clock
+        finally:
+            hud.close(); root.destroy()
+
+    def test_empty_disk_renders_blank_without_crash(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.disk = []
+            hud._draw()
+            self.assertEqual(hud.canvas.itemcget(hud._disk_text, "text"), "")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_disk_row_survives_width_toggle(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.disk = [("C:", 312 * 1024**3, 500 * 1024**3)]
+            hud._toggle_width(); root.update_idletasks()
+            gpu_y = hud.canvas.coords(hud._gpu_text)[1]
+            disk_y = hud.canvas.coords(hud._disk_text)[1]
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            self.assertLess(gpu_y, disk_y)      # ordering preserved when wide
+            self.assertLess(disk_y, media_y)
+            self.assertIn("C 312G", hud.canvas.itemcget(hud._disk_text, "text"))
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

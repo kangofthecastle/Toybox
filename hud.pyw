@@ -16,6 +16,7 @@ import tkinter.messagebox as tkmsg
 import winkit.window as window
 import winkit.metrics as metrics
 import winkit.media as media
+import winkit.diskinfo as diskinfo
 import config
 import webbrowser
 import timeago
@@ -28,7 +29,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/media/clock) + margin
+HEIGHT = 156          # 6 header rows (CPU/RAM/GPU/disk/media/clock) + margin
 WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
 ROW_H = 22
@@ -36,6 +37,7 @@ LABEL_X = PAD
 SPARK_W = 84            # fixed-width sparkline area
 SPARK_RIGHT = WIDTH - PAD
 SPARK_LEFT = SPARK_RIGHT - SPARK_W
+DISK_MAX_CHARS = 26    # cap for the packed disk-free header row (narrow width)
 HISTORY = 60           # ~60 samples in the deque
 
 BG = "#15151a"         # dark translucent background
@@ -127,6 +129,8 @@ class Hud:
         self.gpu_sampler = metrics.GpuSampler()
         self.gpu_hist = collections.deque(maxlen=HISTORY)
         self.gpu = None
+        self.disk = []           # latest diskinfo.usage() list
+        self._disk_at = 0.0      # monotonic time of last disk sample (interval-gated)
         self._drag_dx = 0
         self._drag_dy = 0
         self._moved = False
@@ -165,10 +169,12 @@ class Hud:
         y1 = PAD + ROW_H // 2
         y2 = PAD + ROW_H + ROW_H // 2
         ygpu = PAD + 2 * ROW_H + ROW_H // 2
-        y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand: row 5 (under the media controls)
+        ydisk = PAD + 3 * ROW_H + ROW_H // 2     # disk row: row 4 (after GPU)
+        y3 = PAD + 5 * ROW_H + ROW_H // 2        # clock + expand: row 6 (under the media controls)
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
+        self._disk_text = c.create_text(LABEL_X, ydisk, anchor="w", text="", fill=FG, font=FONT)
         self._clock_text = c.create_text(self.width // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
         self._expand_text = c.create_text(self.width - PAD, y3, anchor="e",
                                           text=EXPAND_GLYPH, fill=FG, font=EXPAND_FONT)
@@ -180,7 +186,7 @@ class Hud:
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
         self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
-        ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media controls: row 4 (above the clock)
+        ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media controls: row 5 (above the clock)
         cx = self.width // 2
         gap = 44
         self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
@@ -361,6 +367,10 @@ class Hud:
         self.gpu = self.gpu_sampler.sample()
         if self.gpu is not None:
             self.gpu_hist.append(self.gpu)
+        now = time.monotonic()
+        if now - self._disk_at >= 15:            # disk-free changes slowly; refresh ~15s
+            self.disk = diskinfo.usage()
+            self._disk_at = now
         self._draw()
         self.root.after(1000, self.tick)
 
@@ -372,6 +382,7 @@ class Hud:
             c.itemconfig(self._gpu_text, text="GPU  --%", fill=DIM)
         else:
             c.itemconfig(self._gpu_text, text=f"GPU {self.gpu:3.0f}%", fill=FG)
+        c.itemconfig(self._disk_text, text=diskinfo.format_disk_row(self.disk, DISK_MAX_CHARS))
         c.itemconfig(self._clock_text, text=time.strftime("%H:%M:%S"))
         self._update_spark(self._cpu_line, self.cpu_hist, self._cpu_band)
         self._update_spark(self._ram_line, self.ram_hist, self._ram_band)
@@ -704,7 +715,7 @@ class Hud:
             c.delete(self._hover_item)
             self._hover_item = None
         self._hover_rect = None
-        y = PAD + 5 * ROW_H + 4                   # below the 5-row header (CPU/RAM/GPU/media/clock)
+        y = PAD + 6 * ROW_H + 4                   # below the 6-row header (CPU/RAM/GPU/disk/media/clock)
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
                 if self.manager.feeds[i].get("tab") == self.active_tab]
@@ -874,7 +885,7 @@ class Hud:
         c = self.canvas
         cx = self.width // 2
         c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
-        ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media row 4 (above clock)
+        ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media row 5 (above clock)
         gap = 44
         c.coords(self._media_prev, cx - gap, ymedia)
         c.coords(self._media_play, cx, ymedia)
@@ -885,7 +896,7 @@ class Hud:
             (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
         ]
-        y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand row 5 (under media)
+        y3 = PAD + 5 * ROW_H + ROW_H // 2        # clock + expand row 6 (under media)
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
 
