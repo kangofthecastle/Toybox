@@ -89,11 +89,51 @@ def format_quote_line(quote):
     return "%-5s %7.2f %s%.1f%%" % (quote.symbol, quote.price, arrow, abs(quote.change_pct))
 
 
+Weather = namedtuple("Weather", ["current", "hi", "lo", "series", "unit"])
+# current/hi/lo are floats (temperatures already in the feed's requested unit);
+# series is list[float] for the sparkline (hourly for 'today', daily-max for
+# multi-day); unit is the API's unit symbol string ("°F"/"°C") or "" when absent.
+
+WEATHER_RANGES = {"today": 1, "3d": 3, "7d": 7}          # range -> forecast_days
+WEATHER_RANGE_ORDER = ("today", "3d", "7d")
+WEATHER_RANGE_LABELS = {"today": "Today", "3d": "3D", "7d": "7D"}
+DEFAULT_WEATHER_RANGE = "today"
+
+
+def openmeteo_geocode_url(city):
+    """Open-Meteo geocoding endpoint for a city name (keyless). count=1 -> the
+    single best match; the city is percent-encoded so spaces/punctuation are safe."""
+    return ("https://geocoding-api.open-meteo.com/v1/search?name=%s"
+            "&count=1&language=en&format=json"
+            % urllib.parse.quote(city, safe=""))
+
+
+def openmeteo_forecast_url(lat, lon, units, range_):
+    """Open-Meteo forecast endpoint (keyless). Unknown range -> DEFAULT_WEATHER_RANGE;
+    unknown units -> 'fahrenheit'. Requests current temp, an hourly series, and
+    daily max/min; forecast_days follows the range (today=1, 3d=3, 7d=7)."""
+    days = WEATHER_RANGES.get(range_, WEATHER_RANGES[DEFAULT_WEATHER_RANGE])
+    unit = units if units in ("fahrenheit", "celsius") else "fahrenheit"
+    return ("https://api.open-meteo.com/v1/forecast"
+            "?latitude=%s&longitude=%s"
+            "&current=temperature_2m&hourly=temperature_2m"
+            "&daily=temperature_2m_max,temperature_2m_min"
+            "&temperature_unit=%s&timezone=auto&forecast_days=%d"
+            % (lat, lon, unit, days))
+
+
+def format_weather_line(weather):
+    """One-line weather render: '<cur>°  H <hi>°  L <lo>°' with temps rounded to
+    whole degrees. Example: '72°  H 78°  L 61°'."""
+    return "%d°  H %d°  L %d°" % (
+        round(weather.current), round(weather.hi), round(weather.lo))
+
+
 NEWS_TABS = (("global", "Global"), ("markets", "Markets"),
              ("tech", "Tech"), ("sports", "Sports"))
 DEFAULT_TAB = "tech"
 _TAB_KEYS = frozenset(k for k, _ in NEWS_TABS)
-_NEWS_TYPES = ("rss", "json", "text", "stocks")
+_NEWS_TYPES = ("rss", "json", "text", "stocks", "weather")
 _PINNED_TYPES = ("github", "notifications", "search")
 
 
@@ -261,7 +301,7 @@ def notification_url(subject_type, subject_url, repo_full):
     return repo_base + _NOTIF_FALLBACK.get(subject_type, "")
 
 
-_VALID_TYPES = ("rss", "json", "text", "github", "notifications", "search", "stocks")
+_VALID_TYPES = ("rss", "json", "text", "github", "notifications", "search", "stocks", "weather")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
@@ -374,6 +414,24 @@ def normalize_feed(raw):
         rng = raw.get("range")
         out["range"] = rng if rng in STOCK_RANGES else DEFAULT_STOCK_RANGE
         out["title"] = title or "Markets"
+        return out
+
+    if ftype == "weather":
+        # default 1800 / floor 600 (Open-Meteo is keyless but slow-changing), so
+        # set interval explicitly like the stocks/search/notifications branches.
+        out["interval"] = _coerce_int(raw.get("interval"), 1800, 600, 86400)
+        city = raw.get("city")
+        city = city.strip() if isinstance(city, str) else ""
+        if not city:
+            out.update(valid=False, error="weather feed needs 'city'",
+                       title=title or "Weather")
+            return out
+        out["city"] = city
+        units = raw.get("units")
+        out["units"] = units if units in ("fahrenheit", "celsius") else "fahrenheit"
+        rng = raw.get("range")
+        out["range"] = rng if rng in WEATHER_RANGES else DEFAULT_WEATHER_RANGE
+        out["title"] = title or "Weather"
         return out
 
     # github
