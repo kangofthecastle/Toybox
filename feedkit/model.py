@@ -57,6 +57,66 @@ def is_web_url(url):
     return isinstance(url, str) and url.lower().startswith(("http://", "https://"))
 
 
+Quote = namedtuple("Quote", ["symbol", "price", "change_pct", "series"])
+# price, change_pct are floats; series is list[float] (may be empty).
+
+STOCK_RANGES = {"1d": "5m", "5d": "30m", "1mo": "1d", "3mo": "1d"}   # range -> bar interval
+STOCK_RANGE_ORDER = ("1d", "5d", "1mo", "3mo")
+STOCK_RANGE_LABELS = {"1d": "1D", "5d": "1W", "1mo": "1M", "3mo": "3M"}
+DEFAULT_STOCK_RANGE = "1mo"
+
+
+def yahoo_chart_url(symbol, range_):
+    """Yahoo v8 chart endpoint for one symbol. Unknown range -> DEFAULT_STOCK_RANGE.
+    The symbol is percent-encoded (e.g. '^GSPC' -> '%5EGSPC'). Keyless; the
+    feedkit default UA returns HTTP 200."""
+    r = range_ if range_ in STOCK_RANGES else DEFAULT_STOCK_RANGE
+    return ("https://query1.finance.yahoo.com/v8/finance/chart/%s"
+            "?range=%s&interval=%s&includePrePost=false"
+            % (urllib.parse.quote(symbol, safe=""), r, STOCK_RANGES[r]))
+
+
+def yahoo_quote_web_url(symbol):
+    """Browser quote page for a symbol (the tile's click target)."""
+    return "https://finance.yahoo.com/quote/%s" % urllib.parse.quote(symbol, safe="")
+
+
+def format_quote_line(quote):
+    """One-line quote render: '<sym> <price> <arrow><|pct|>%'. Arrow is up (green)
+    when change_pct >= 0 (exactly 0.0 counts as up), else down. Example:
+    'SPY    746.77 ▼1.3%'."""
+    arrow = "△" if quote.change_pct >= 0 else "▼"
+    return "%-5s %7.2f %s%.1f%%" % (quote.symbol, quote.price, arrow, abs(quote.change_pct))
+
+
+NEWS_TABS = (("global", "Global"), ("markets", "Markets"),
+             ("tech", "Tech"), ("sports", "Sports"))
+DEFAULT_TAB = "tech"
+_TAB_KEYS = frozenset(k for k, _ in NEWS_TABS)
+_NEWS_TYPES = ("rss", "json", "text", "stocks")
+_PINNED_TYPES = ("github", "notifications", "search")
+
+
+def coerce_tab(value):
+    """A valid tab key for a news feed; unknown/missing -> 'global'."""
+    return value if value in _TAB_KEYS else "global"
+
+
+def coerce_default_tab(value):
+    """A valid tab key for hud.default_tab; unknown/missing -> DEFAULT_TAB ('tech')."""
+    return value if value in _TAB_KEYS else DEFAULT_TAB
+
+
+def is_news_type(t):
+    """True for tabbed news feed types (rss/json/text/stocks)."""
+    return t in _NEWS_TYPES
+
+
+def is_pinned_type(t):
+    """True for pinned GitHub-family feed types (github/notifications/search)."""
+    return t in _PINNED_TYPES
+
+
 GITHUB_API = "https://api.github.com"
 
 
@@ -201,7 +261,7 @@ def notification_url(subject_type, subject_url, repo_full):
     return repo_base + _NOTIF_FALLBACK.get(subject_type, "")
 
 
-_VALID_TYPES = ("rss", "json", "text", "github", "notifications", "search")
+_VALID_TYPES = ("rss", "json", "text", "github", "notifications", "search", "stocks")
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 
@@ -240,6 +300,9 @@ def normalize_feed(raw):
 
     floor = 120 if ftype == "github" else 300
     out["interval"] = _coerce_int(raw.get("interval"), floor, floor, 86400)
+
+    if is_news_type(ftype):
+        out["tab"] = coerce_tab(raw.get("tab"))
 
     if ftype in ("rss", "json", "text"):
         out["items"] = _coerce_int(raw.get("items"), 3, 1, 10)
@@ -287,6 +350,30 @@ def normalize_feed(raw):
             return out
         out["query"] = query
         out["title"] = title or "Search"
+        return out
+
+    if ftype == "stocks":
+        # default 300 / floor 120 (mirrors search/notifications), set explicitly.
+        out["interval"] = _coerce_int(raw.get("interval"), 300, 120, 86400)
+        raw_syms = raw.get("symbols")
+        symbols = []
+        if isinstance(raw_syms, list):
+            for s in raw_syms:
+                if not isinstance(s, str):
+                    continue
+                clean = re.sub(r"[^A-Z0-9.^-]", "", s.strip().upper())
+                if clean:
+                    symbols.append(clean)
+                if len(symbols) >= 10:
+                    break
+        if not symbols:
+            out.update(valid=False, error="stocks feed needs 'symbols'",
+                       title=title or "Markets")
+            return out
+        out["symbols"] = symbols
+        rng = raw.get("range")
+        out["range"] = rng if rng in STOCK_RANGES else DEFAULT_STOCK_RANGE
+        out["title"] = title or "Markets"
         return out
 
     # github
