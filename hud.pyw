@@ -133,6 +133,9 @@ class Hud:
         self._hit = []            # [(y0, y1, url)] for click-to-open (http/https only)
         self._action_hits = []    # [(y0,y1,x0,x1,action)] x-aware dismiss/mark-all zones
         self._feed_items = []     # canvas item ids to clear on each feed redraw
+        self._hover_xy = None      # last cursor (x, y) over the canvas, or None
+        self._hover_item = None    # the highlight rectangle canvas id, or None
+        self._hover_rect = None    # the (x0,y0,x1,y1) currently highlighted, or None
         self._drain_after = None  # pending after() id so close() can cancel it
         self.settings = None      # FeedSettingsWindow singleton (Task 11)
         self.active_tab = feedmodel.coerce_default_tab(cfg["hud"].get("default_tab"))
@@ -190,6 +193,8 @@ class Hud:
             w.bind("<B1-Motion>", self._on_drag)
             w.bind("<ButtonRelease-1>", self._on_release)
             w.bind("<Button-3>", self._on_menu)
+            w.bind("<Motion>", self._on_motion)
+            w.bind("<Leave>", self._on_leave)
 
         self.menu = tk.Menu(root, tearoff=0)
         for preset in ALPHA_PRESETS:
@@ -538,6 +543,41 @@ class Hud:
                 return action
         return None
 
+    def _hover_zone_at(self, x, y):
+        """Rectangle (x0,y0,x1,y1) to highlight for the clickable thing under the
+        cursor, or None. A tab/range action highlights its own segment (a pill);
+        a clickable feed row highlights the full content width. Refresh/dismiss
+        glyph zones are intentionally not highlighted."""
+        for y0, y1, x0, x1, action in self._action_hits:
+            if y0 <= y <= y1 and x0 <= x <= x1 and action[0] in ("tab", "range"):
+                return (x0 - 3, y0, x1 + 3, y1)
+        for y0, y1, _url in self._hit:
+            if y0 <= y <= y1:
+                return (PAD, y0, WIDTH - PAD, y1)
+        return None
+
+    def _apply_hover(self):
+        """Reconcile the highlight rectangle with the current cursor position.
+        No-op when the target band is unchanged (avoids per-motion churn)."""
+        rect = self._hover_zone_at(*self._hover_xy) if self._hover_xy else None
+        if rect == self._hover_rect:
+            return
+        self._hover_rect = rect
+        if self._hover_item is not None:
+            self.canvas.delete(self._hover_item)
+            self._hover_item = None
+        if rect is not None:
+            self._hover_item = self.canvas.create_rectangle(*rect, fill=HOVER_BG, outline="")
+            self.canvas.tag_lower(self._hover_item)     # behind text/lines/charts
+
+    def _on_motion(self, event):
+        self._hover_xy = (event.x, event.y)
+        self._apply_hover()
+
+    def _on_leave(self, event):
+        self._hover_xy = None
+        self._apply_hover()
+
     def _fit_px(self, text, x_start):
         """Trim text with an ellipsis so it fits from x_start to the right margin
         at FEED_FONT width (pixel-accurate, unlike the char-count _fit)."""
@@ -567,6 +607,10 @@ class Hud:
         self._feed_items = []
         self._hit = []
         self._action_hits = []
+        if self._hover_item is not None:
+            c.delete(self._hover_item)
+            self._hover_item = None
+        self._hover_rect = None
         y = PAD + 5 * ROW_H + 4                   # below the 5-row header (CPU/RAM/GPU/clock/media)
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
@@ -582,6 +626,7 @@ class Hud:
         for idx in self._github_indices():
             y = self._draw_tile(idx, self.manager.feeds[idx], y)
         self._resize(y + PAD)
+        self._apply_hover()
 
     def _draw_tab_bar(self, y):
         c = self.canvas

@@ -13,6 +13,11 @@ import os
 import unittest.mock as mock
 
 
+def hud_mid_x():
+    import hud as hudmod
+    return hudmod.WIDTH // 2
+
+
 class _HudTestBase(unittest.TestCase):
     """Shared base for the in-process Tk Hud tests. setUp stubs the network so the
     worker (started in Hud.__init__) does NO real I/O and is deterministic."""
@@ -1018,6 +1023,77 @@ class TestHudFitPx(_HudTestBase):
                 None, None)
             hud._draw_feeds(); root.update_idletasks()
             self.assertTrue(hud._feed_has_text("…"))                       # ellipsis rendered
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudHover(_HudTestBase):
+    def _evt(self, x, y):
+        return type("E", (), {"x": x, "y": y})()
+
+    def _feeds(self):
+        return [{"type": "rss", "url": "https://t", "title": "TechFeed", "tab": "tech"}]
+
+    def _first_hit_point(self, hud):
+        y0, y1, _url = hud._hit[0]
+        return (hud_mid_x(), (y0 + y1) // 2)
+
+    def test_hover_over_row_creates_highlight(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        root, hud = self._make_hud(self._feeds())
+        try:
+            hud.active_tab = "tech"
+            hud.feed_state[0] = manager.FeedResult("ok", [Item("line one", "https://t/a")], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._hit, "expected a clickable row")
+            y0, y1, _u = hud._hit[0]
+            hud._on_motion(self._evt(60, (y0 + y1) // 2))
+            self.assertIsNotNone(hud._hover_item)
+            self.assertEqual(hud.canvas.type(hud._hover_item), "rectangle")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_leave_clears_highlight(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        root, hud = self._make_hud(self._feeds())
+        try:
+            hud.active_tab = "tech"
+            hud.feed_state[0] = manager.FeedResult("ok", [Item("line one", "https://t/a")], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            y0, y1, _u = hud._hit[0]
+            hud._on_motion(self._evt(60, (y0 + y1) // 2))
+            self.assertIsNotNone(hud._hover_item)
+            hud._on_leave(self._evt(0, 0))
+            self.assertIsNone(hud._hover_item)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_hover_over_empty_space_no_highlight(self):
+        root, hud = self._make_hud(self._feeds())
+        try:
+            hud.active_tab = "tech"
+            hud._draw_feeds(); root.update_idletasks()
+            hud._on_motion(self._evt(5, 100000))                 # far below everything
+            self.assertIsNone(hud._hover_item)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_highlight_survives_redraw(self):
+        import feedkit.manager as manager
+        from feedkit.model import Item
+        root, hud = self._make_hud(self._feeds())
+        try:
+            hud.active_tab = "tech"
+            hud.feed_state[0] = manager.FeedResult("ok", [Item("line one", "https://t/a")], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            y0, y1, _u = hud._hit[0]
+            hud._on_motion(self._evt(60, (y0 + y1) // 2))
+            self.assertIsNotNone(hud._hover_item)
+            hud._draw_feeds(); root.update_idletasks()             # 250ms-loop style redraw
+            self.assertIsNotNone(hud._hover_item)                  # re-established, no flicker-to-none
         finally:
             hud.close(); root.destroy()
 
