@@ -559,6 +559,14 @@ class Hud:
                        "state": result.state if result else "loading",
                        "error": result.error if result else None}
             return ("stocks", payload)
+        if feed.get("valid") and feed["type"] == "weather":
+            result = self.feed_state.get(idx)
+            payload = {"title": feed.get("title") or feed.get("city") or "Weather",
+                       "range": feed["range"],
+                       "weather": (result.items[0] if result and result.items else None),
+                       "state": result.state if result else "loading",
+                       "error": result.error if result else None}
+            return ("weather", payload)
         result = self.feed_state.get(idx)
         if result is None:
             return (title, None, FEED_FG, [("loading…", None, True)], None)
@@ -623,7 +631,9 @@ class Hud:
 
     def _draw_tile(self, idx, feed, y):
         tile = self._tile_for(idx, feed)
-        if len(tile) == 2:                       # ("stocks", payload)
+        if len(tile) == 2:                       # ("stocks"/"weather", payload)
+            if tile[0] == "weather":
+                return self._draw_weather_tile(idx, tile[1], y)
             return self._draw_stock_tile(idx, tile[1], y)
         title, title_url, color, lines, header_action = tile
         c = self.canvas
@@ -928,6 +938,57 @@ class Hud:
                 self._feed_items.append(ul)
             x -= w + 6
 
+    def _draw_weather_tile(self, idx, payload, y):
+        c = self.canvas
+        y += FEED_TITLE_GAP
+        row_y = y + FEED_LINE_H // 2
+        tid = c.create_text(PAD, row_y, anchor="w", text=_fit(payload["title"]),
+                            fill=FEED_FG, font=FEED_TITLE_FONT)
+        self._feed_items.append(tid)
+        self._draw_weather_range_toggle(idx, payload["range"], row_y)
+        y += FEED_LINE_H
+        w = payload["weather"]
+        if w is None:
+            msg = ("! " + payload["error"]) if (payload["state"] != "loading" and payload["error"]) else "loading…"
+            lid = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                                text=_fit(msg), fill=FEED_DIM, font=FEED_FONT)
+            self._feed_items.append(lid)
+            return y + FEED_LINE_H
+        stale = payload["state"] in ("stale", "error")
+        color = FEED_DIM if stale else ACCENT
+        lid = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                            text=_fit(feedmodel.format_weather_line(w)),
+                            fill=(FEED_DIM if stale else FEED_FG), font=FEED_FONT)
+        self._feed_items.append(lid)
+        y += FEED_LINE_H
+        pts = _stock_points(w.series, PAD + 6, self.width - PAD, y + 2, y + STOCK_CHART_H - 2)
+        if pts:
+            bottom = y + STOCK_CHART_H - 2
+            poly = c.create_polygon(*(pts + [pts[-2], bottom, pts[0], bottom]),
+                                    fill=color, stipple="gray25", outline="")
+            self._feed_items.append(poly)
+            ln = c.create_line(*pts, fill=color, width=1)
+            self._feed_items.append(ln)
+        y += STOCK_CHART_H
+        return y
+
+    def _draw_weather_range_toggle(self, idx, current, row_y):
+        c = self.canvas
+        x = self.width - PAD
+        for code in reversed(feedmodel.WEATHER_RANGE_ORDER):     # draw right->left; 7D rightmost
+            label = feedmodel.WEATHER_RANGE_LABELS[code]
+            active = (code == current)
+            tid = c.create_text(x, row_y, anchor="e", text=label,
+                                fill=(FEED_FG if active else FEED_DIM), font=FEED_FONT)
+            self._feed_items.append(tid)
+            w = self._feed_font_measure.measure(label)
+            self._register_action(row_y, x - w, x, ("range", idx, code))
+            if active:
+                uy = row_y + FEED_LINE_H // 2 - 1
+                ul = c.create_rectangle(x - w, uy, x, uy + 2, fill=ACCENT, outline="")
+                self._feed_items.append(ul)
+            x -= w + 6
+
     def _resize(self, wanted_h):
         sh = self.root.winfo_screenheight()
         new_h = max(HEIGHT, min(int(wanted_h), sh - self.root.winfo_y()))
@@ -1036,7 +1097,12 @@ class Hud:
         self._draw_feeds()
 
     def _set_stock_range(self, idx, code):
-        self.manager.set_stock_range(idx, code)
+        feeds = self.manager.feeds
+        ftype = feeds[idx].get("type") if 0 <= idx < len(feeds) else None
+        if ftype == "weather":
+            self.manager.set_weather_range(idx, code)
+        else:
+            self.manager.set_stock_range(idx, code)
         self.feed_state.pop(idx, None)
         self._draw_feeds()
 

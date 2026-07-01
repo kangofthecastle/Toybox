@@ -1656,5 +1656,83 @@ class TestHudNowPlayingMarquee(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudWeather(_HudTestBase):
+    FEED = {"type": "weather", "title": "Weather", "city": "Boston",
+            "units": "fahrenheit", "range": "today", "tab": "global"}
+
+    def _w(self, current=72.0, hi=78.0, lo=61.0, series=(70.0, 72.0, 74.0), unit="°F"):
+        from feedkit.model import Weather
+        return Weather(current, hi, lo, list(series), unit)
+
+    def test_tile_renders_temps_chart_and_toggle(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud.feed_state[0] = manager.FeedResult("ok", [self._w()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Weather"))          # title
+            self.assertTrue(hud._feed_has_text("H 78°"))       # hi/lo line
+            self.assertTrue(hud._feed_has_text("Today"))            # toggle labels
+            self.assertTrue(hud._feed_has_text("7D"))
+            self.assertTrue(any(hud.canvas.type(i) == "line" for i in hud._feed_items))  # sparkline
+        finally:
+            hud.close(); root.destroy()
+
+    def test_range_toggle_click_calls_set_weather_range(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            calls = []
+            hud.manager.set_weather_range = lambda idx, code: calls.append((idx, code))
+            hud.feed_state[0] = manager.FeedResult("ok", [self._w()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            hit = None
+            for (y0, y1, x0, x1, a) in hud._action_hits:
+                if a == ("range", 0, "7d"):
+                    hit = (y0, y1, x0, x1); break
+            self.assertIsNotNone(hit, "no 7D range zone")
+            y0, y1, x0, x1 = hit
+            ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+            hud._moved = False; hud._on_release(ev)
+            self.assertEqual(calls, [(0, "7d")])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_stale_tile_dims_line(self):
+        import feedkit.manager as manager
+        import hud as hudmod
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud.feed_state[0] = manager.FeedResult("stale", [self._w()], None, "offline")
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "H 78°"), hudmod.FEED_DIM)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_error_tile_shows_placeholder(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud.feed_state[0] = manager.FeedResult("error", [], None, "city not found")
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("! city not found"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_loading_placeholder_when_no_data(self):
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud._draw_feeds(); root.update_idletasks()      # feed_state[0] is None
+            self.assertTrue(hud._feed_has_text("loading"))
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
