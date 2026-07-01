@@ -149,7 +149,7 @@ class Hud:
         self.width = WIDTH        # session-only; resets narrow each launch
 
         self.canvas = tk.Canvas(
-            root, width=WIDTH, height=HEIGHT, bg=BG,
+            root, width=self.width, height=HEIGHT, bg=BG,
             highlightthickness=0, bd=0,
         )
         self.canvas.pack(fill="both", expand=True)
