@@ -74,5 +74,24 @@ class TestNowPlayingRecord(unittest.TestCase):
         self.assertEqual(s.sampled_at, 3.0)
 
 
+class TestReadSmoke(unittest.TestCase):
+    def test_read_never_raises_and_is_well_shaped(self):
+        # On any machine: returns None or a valid NowPlaying, and never raises.
+        s = nowplaying.read()
+        if s is not None:
+            self.assertIsInstance(s, nowplaying.NowPlaying)
+            self.assertIn(s.status, ("playing", "paused", "stopped"))
+            self.assertIsInstance(s.title, str)
+            self.assertIsInstance(s.artist, str)
+            self.assertGreaterEqual(s.position_s, 0.0)
+            self.assertGreaterEqual(s.duration_s, 0.0)
+            self.assertIsInstance(s.sampled_at, float)
+
+    def test_read_is_idempotent_no_raise(self):
+        # Calling twice (re-entrant RoInitialize path) must also never raise.
+        nowplaying.read()
+        nowplaying.read()
+
+
 if __name__ == "__main__":
     unittest.main()
