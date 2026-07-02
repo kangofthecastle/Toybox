@@ -2,6 +2,7 @@ import http.server
 import threading
 import unittest
 import urllib.error
+from unittest import mock
 
 import feedkit.fetch as fetch
 
@@ -153,6 +154,75 @@ class TestFetch(unittest.TestCase):
         r = fetch.send("http://127.0.0.1:1/x", "PUT")
         self.assertEqual(r.status, "error")
         self.assertEqual(r.error, "offline")
+
+
+class TestFetchRetry(unittest.TestCase):
+    """fetch() retries once on a transient network failure ('offline') so a single
+    dropped/slow request never strands a tile until its next (minutes-away) poll.
+    Deterministic failures are never retried. The retry loop is exercised by
+    stubbing _fetch_once (no real network / no real sleep)."""
+    def _stub(self, results):
+        seq = list(results)
+        calls = []
+        def stub(url, headers, etag, last_modified, timeout, max_bytes):
+            calls.append(url)
+            return seq[min(len(calls) - 1, len(seq) - 1)]
+        return stub, calls
+
+    def test_retries_once_on_offline_then_succeeds(self):
+        offline = fetch.FetchResult("error", None, None, None, None, "offline")
+        ok = fetch.FetchResult("ok", b"body", "text/xml", None, None, None)
+        stub, calls = self._stub([offline, ok])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retry_delay=0)
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(len(calls), 2)                # initial + one retry
+
+    def test_success_first_try_does_not_retry(self):
+        ok = fetch.FetchResult("ok", b"x", None, None, None, None)
+        stub, calls = self._stub([ok])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retry_delay=0)
+        self.assertEqual(r.status, "ok")
+        self.assertEqual(len(calls), 1)
+
+    def test_http_error_is_not_retried(self):
+        bad = fetch.FetchResult("error", None, None, None, None, "bad token")
+        stub, calls = self._stub([bad])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retry_delay=0)
+        self.assertEqual(r.error, "bad token")
+        self.assertEqual(len(calls), 1)                # deterministic -> no retry
+
+    def test_too_large_is_not_retried(self):
+        big = fetch.FetchResult("error", None, None, None, None, "too large")
+        stub, calls = self._stub([big])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retry_delay=0)
+        self.assertEqual(len(calls), 1)
+
+    def test_cert_error_is_not_retried(self):
+        cert = fetch.FetchResult("error", None, None, None, None, "cert error")
+        stub, calls = self._stub([cert])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retry_delay=0)
+        self.assertEqual(len(calls), 1)
+
+    def test_persistent_offline_gives_up_after_one_retry(self):
+        offline = fetch.FetchResult("error", None, None, None, None, "offline")
+        stub, calls = self._stub([offline])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retry_delay=0)
+        self.assertEqual(r.error, "offline")
+        self.assertEqual(len(calls), 2)                # initial + one retry, then stop
+
+    def test_retries_zero_disables_retry(self):
+        offline = fetch.FetchResult("error", None, None, None, None, "offline")
+        stub, calls = self._stub([offline])
+        with mock.patch.object(fetch, "_fetch_once", stub):
+            r = fetch.fetch("http://x", retries=0, retry_delay=0)
+        self.assertEqual(r.error, "offline")
+        self.assertEqual(len(calls), 1)                # single shot
 
 
 class TestErrorWord(unittest.TestCase):
