@@ -217,6 +217,10 @@ class Hud:
         self._sched_mtime = None
         self._sched_stop = threading.Event()
         self._sched_thread = None
+        # config.json feed-reload watcher: baseline the mtime now, BEFORE the first
+        # tick() (called at the end of __init__), so tick never sees a spurious
+        # change on startup.
+        self._cfg_mtime = self._config_mtime()
         if not _smoke_ms():
             self._start_schedule_poller()
         self.width = WIDTH        # session-only; resets narrow each launch
@@ -496,6 +500,7 @@ class Hud:
         if now - self._disk_at >= 15:            # disk-free changes slowly; refresh ~15s
             self.disk = diskinfo.usage()
             self._disk_at = now
+        self._reload_feeds_if_config_changed()   # live-pick-up of edited feeds/token
         self._draw()
         self._draw_nowplaying()
         self._tick_after = self.root.after(1000, self.tick)
@@ -1473,14 +1478,44 @@ class Hud:
         self.feed_state.pop(idx, None)
         self._draw_feeds()
 
-    def _reload_feeds(self):
-        reloaded = config.load(self.CFG_PATH)
+    def _reload_feeds(self, reloaded=None):
+        if reloaded is None:
+            reloaded = config.load(self.CFG_PATH)
         self.cfg["feeds"] = reloaded.get("feeds", [])
         self.cfg["hud"]["github_token"] = reloaded["hud"].get("github_token", "")
         self.feed_state = {}
         self.manager.set_token(self._github_token())
         self.manager.set_feeds(self.cfg["feeds"])
         self._draw_feeds()
+
+    def _config_mtime(self):
+        """config.json's mtime, or None if it can't be stat'd. Cheap (one syscall)."""
+        try:
+            return os.stat(self.CFG_PATH).st_mtime
+        except OSError:
+            return None
+
+    def _reload_feeds_if_config_changed(self):
+        """Live-reload feeds when config.json changes on disk. mtime-gated, so the
+        common case is a single os.stat per tick. Only reloads when the feeds or
+        github_token actually differ from what's loaded -- so the HUD's own window-
+        position/opacity saves (and any other toy's writes to its own section)
+        change the mtime but never trigger a disruptive feed refetch. Runs on the
+        main thread (called from tick()), so touching Tk in _reload_feeds is safe.
+        Never raises."""
+        try:
+            mtime = self._config_mtime()
+            if mtime is None or mtime == self._cfg_mtime:
+                return
+            self._cfg_mtime = mtime
+            reloaded = config.load(self.CFG_PATH)
+            if (reloaded.get("feeds", []) == self.cfg["feeds"]
+                    and reloaded["hud"].get("github_token", "")
+                    == self.cfg["hud"].get("github_token", "")):
+                return                            # nothing feed-relevant changed
+            self._reload_feeds(reloaded)
+        except Exception:
+            pass
 
 
 def main():

@@ -47,6 +47,96 @@ class _HudTestBase(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudConfigWatch(_HudTestBase):
+    """The HUD watches config.json and live-reloads feeds when they change on
+    disk, but ignores writes that don't touch feeds/token (position saves etc.)."""
+    def _temp_cfg(self, feeds, token=""):
+        import tempfile, config
+        path = os.path.join(tempfile.mkdtemp(), "config.json")
+        cfg = config.defaults()
+        cfg["feeds"] = feeds
+        cfg["hud"]["github_token"] = token
+        config.save(path, cfg)
+        return path
+
+    def _rewrite(self, path, feeds=None, token=None, x=None):
+        import config, os as _os
+        cfg = config.load(path)
+        if feeds is not None:
+            cfg["feeds"] = feeds
+        if token is not None:
+            cfg["hud"]["github_token"] = token
+        if x is not None:
+            cfg["hud"]["x"] = x
+        config.save(path, cfg)
+        # Force a strictly-newer mtime so the watcher fires regardless of the
+        # filesystem's mtime resolution.
+        st = _os.stat(path)
+        _os.utime(path, (st.st_atime, st.st_mtime + 100))
+
+    def _arm(self, hud, path):
+        # Point the watcher at the temp file and baseline its mtime (the ctor
+        # baselined against the real config before isolate_cfg reassigned it).
+        hud.CFG_PATH = path
+        hud._cfg_mtime = hud._config_mtime()
+
+    def test_reloads_feeds_when_config_feeds_change(self):
+        feed_a = {"type": "rss", "url": "https://a", "title": "A"}
+        feed_b = {"type": "rss", "url": "https://b", "title": "B"}
+        path = self._temp_cfg([feed_a])
+        root, hud = self._make_hud([feed_a])
+        try:
+            self._arm(hud, path)
+            hud.feed_state[0] = "sentinel"          # reload must clear feed_state
+            self._rewrite(path, feeds=[feed_a, feed_b])
+            hud.tick()                               # watcher runs inside tick()
+            self.assertEqual(len(hud.cfg["feeds"]), 2)
+            self.assertEqual(hud.cfg["feeds"][1]["title"], "B")
+            self.assertEqual(hud.feed_state, {})     # cleared by the reload
+        finally:
+            hud.close(); root.destroy()
+
+    def test_no_reload_when_only_position_changed(self):
+        feed_a = {"type": "rss", "url": "https://a", "title": "A"}
+        path = self._temp_cfg([feed_a])
+        root, hud = self._make_hud([feed_a])
+        try:
+            self._arm(hud, path)
+            hud.feed_state[0] = "sentinel"
+            self._rewrite(path, x=999)               # feeds unchanged, only hud.x
+            hud._reload_feeds_if_config_changed()
+            self.assertEqual(hud.feed_state.get(0), "sentinel")   # NOT reloaded
+            self.assertEqual(len(hud.cfg["feeds"]), 1)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_reloads_when_token_changes(self):
+        feed_a = {"type": "rss", "url": "https://a", "title": "A"}
+        path = self._temp_cfg([feed_a], token="")
+        root, hud = self._make_hud([feed_a])
+        try:
+            self._arm(hud, path)
+            hud.feed_state[0] = "sentinel"
+            self._rewrite(path, token="ghp_new")
+            hud._reload_feeds_if_config_changed()
+            self.assertEqual(hud.cfg["hud"]["github_token"], "ghp_new")
+            self.assertEqual(hud.feed_state, {})
+        finally:
+            hud.close(); root.destroy()
+
+    def test_missing_config_is_safe(self):
+        root, hud = self._make_hud([{"type": "rss", "url": "https://a", "title": "A"}])
+        try:
+            hud.CFG_PATH = os.path.join(os.path.dirname(hud.CFG_PATH), "does_not_exist_xyz.json")
+            hud._cfg_mtime = 12345.0
+            hud.feed_state[0] = "sentinel"
+            hud._reload_feeds_if_config_changed()    # must not raise, must not reload
+            self.assertEqual(hud.feed_state.get(0), "sentinel")
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestHudFeedRendering(_HudTestBase):
     def test_feeds_grow_window_past_metrics_height(self):
         import hud as hudmod
