@@ -65,7 +65,8 @@ class ClipSyncNode:
         self._tcp_sock.listen(8)
         self._tcp_sock.settimeout(0.5)
 
-        for target in (self._tcp_accept_loop, self._tx_loop):
+        for target in (self._tcp_accept_loop, self._tx_loop,
+                       self._udp_beacon_loop, self._udp_listen_loop):
             t = threading.Thread(target=target, daemon=True)
             t.start()
             self._threads.append(t)
@@ -147,3 +148,35 @@ class ClipSyncNode:
                 c.sendall(struct.pack(">I", len(frame)) + frame)
         except OSError:
             pass
+
+    # -- UDP discovery ----------------------------------------------------
+    def _handle_beacon(self, data, addr_ip, now):
+        parsed = discovery.parse_beacon(self._key_mac, data)
+        if parsed is None:
+            return
+        instance_id, tcp_port = parsed
+        if instance_id == self._instance_id:
+            return                        # our own beacon, bounced back to us
+        self._peers.seen(instance_id, addr_ip, tcp_port, now)
+
+    def _udp_beacon_loop(self):
+        beacon = discovery.encode_beacon(self._key_mac, self._instance_id,
+                                         self._tcp_port)
+        while not self._stop.is_set():
+            try:
+                self._udp_sock.sendto(beacon, ("255.255.255.255", self._udp_port))
+            except OSError:
+                pass
+            self._stop.wait(_BEACON_INTERVAL)
+
+    def _udp_listen_loop(self):
+        while not self._stop.is_set():
+            try:
+                data, addr = self._udp_sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                if self._stop.is_set():
+                    return
+                continue
+            self._handle_beacon(data, addr[0], time.monotonic())
