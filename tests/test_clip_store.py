@@ -254,6 +254,24 @@ class TestClipStore(unittest.TestCase):
         s = self.store_p()
         self.assertEqual(s.recent(), [])
 
+    def test_failed_save_leaves_no_temp_file(self):
+        # A write failure (e.g. an AV/indexer lock on os.replace) must not leave
+        # an orphaned .tmp holding plaintext recent entries behind.
+        import clip_store as _cs
+        s = self.store_p()
+
+        def boom(*a, **k):
+            raise OSError("simulated replace failure")
+
+        orig = _cs.os.replace
+        _cs.os.replace = boom
+        try:
+            s.add("secret-value", 1.0)   # _save_recent -> _save_list -> os.replace raises
+        finally:
+            _cs.os.replace = orig
+        leftovers = [n for n in os.listdir(self.dir) if n.endswith(".tmp")]
+        self.assertEqual(leftovers, [], "orphaned temp files left behind: %r" % leftovers)
+
 
 if __name__ == "__main__":
     unittest.main()

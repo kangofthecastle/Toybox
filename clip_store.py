@@ -137,9 +137,12 @@ class ClipStore:
     @staticmethod
     def _save_list(path, lst):
         """Atomically write lst as JSON to path (temp file + os.replace). No-op
-        without a path; disk errors are swallowed (persistence is best-effort)."""
+        without a path. Best-effort: on any OS error the write is abandoned and
+        the temp file removed, so a failed write never leaves a stray file behind
+        -- for recent that file would hold plaintext secrets."""
         if not path:
             return
+        tmp = None
         try:
             directory = os.path.dirname(path)
             if directory:
@@ -149,4 +152,8 @@ class ClipStore:
                 json.dump(lst, f, indent=2)
             os.replace(tmp, path)
         except OSError:
-            pass
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
