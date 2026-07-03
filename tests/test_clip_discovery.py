@@ -25,6 +25,14 @@ class TestBeacon(unittest.TestCase):
         self.assertIsNone(discovery.parse_beacon(self.km, b"nonsense"))
         self.assertIsNone(discovery.parse_beacon(self.km, b""))
 
+    def test_long_unicode_id_truncates_but_still_parses(self):
+        # a >255-byte multibyte id must be truncated WITHOUT splitting a char,
+        # so the beacon stays valid UTF-8 and authenticates
+        beacon = discovery.encode_beacon(self.km, "é" * 200, 50506)   # 400 bytes
+        parsed = discovery.parse_beacon(self.km, beacon)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[1], 50506)
+
 
 class TestPeerTable(unittest.TestCase):
     def test_seen_then_live(self):
@@ -36,6 +44,11 @@ class TestPeerTable(unittest.TestCase):
         pt = discovery.PeerTable(ttl=10.0)
         pt.seen("A", "10.0.0.2", 50506, now=100.0)
         self.assertEqual(pt.live_peers(now=111.0), [])   # 11s > 10s ttl
+
+    def test_exact_ttl_boundary_is_live(self):
+        pt = discovery.PeerTable(ttl=10.0)
+        pt.seen("A", "10.0.0.2", 50506, now=100.0)
+        self.assertEqual(pt.live_peers(now=110.0), [("10.0.0.2", 50506)])  # exactly ttl => live
 
     def test_refresh_extends_life(self):
         pt = discovery.PeerTable(ttl=10.0)

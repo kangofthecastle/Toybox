@@ -15,7 +15,9 @@ _MIN_LEN = len(_BEACON_MAGIC) + 2 + 1 + _TAG_LEN   # magic + port + id_len + tag
 def encode_beacon(key_mac, instance_id, tcp_port):
     """body = magic(4) | tcp_port(2, big-endian) | id_len(1) | instance_id;
     frame = body | HMAC-SHA256(body)."""
-    idb = instance_id.encode("utf-8")[:255]
+    # cap at 255 bytes without splitting a multibyte char (decode/ignore drops any
+    # partial trailing char, so the id always stays valid UTF-8 and re-parseable)
+    idb = instance_id.encode("utf-8")[:255].decode("utf-8", "ignore").encode("utf-8")
     body = _BEACON_MAGIC + struct.pack(">H", tcp_port) + bytes([len(idb)]) + idb
     return body + hmac.new(key_mac, body, "sha256").digest()
 
