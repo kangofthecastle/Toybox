@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 config.json
 favorites.json
+recent.json
 reminders.json
 toybox.log
 toybox.ico

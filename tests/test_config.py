@@ -199,6 +199,14 @@ class TestConfig(unittest.TestCase):
         self.assertIs(c["sync"], False)          # non-bool rejected
         self.assertEqual(c["sync_passphrase"], "")  # non-str rejected
 
+    def test_clipboard_persist_recent_default(self):
+        self.assertIs(config.defaults()["clipboard"]["persist_recent"], True)
+
+    def test_clipboard_persist_recent_wrong_type_falls_back(self):
+        self._write({"clipboard": {"persist_recent": "yes"}})
+        c = config.load(self.path)["clipboard"]
+        self.assertIs(c["persist_recent"], True)   # non-bool rejected -> default
+
     def test_feeds_default_is_empty_list(self):
         self.assertEqual(config.defaults()["feeds"], [])
 

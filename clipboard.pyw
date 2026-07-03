@@ -29,6 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
 LOG_PATH = os.path.join(HERE, "toybox.log")
 FAV_PATH = os.path.join(HERE, "favorites.json")
+RECENT_PATH = os.path.join(HERE, "recent.json")
 
 CAPTURE_MS = 250
 SYNC_DRAIN_MS = 120
@@ -698,7 +699,12 @@ def main():
     if os.environ.get("TOYBOX_SMOKE_SYNC"):        # exercise the sync path under smoke
         cfg["clipboard"]["sync"] = True
         cfg["clipboard"]["sync_passphrase"] = "smoke-pass"
-    store = clip_store.ClipStore(cfg["clipboard"]["max_items"], FAV_PATH)
+    store = clip_store.ClipStore(
+        cfg["clipboard"]["max_items"], FAV_PATH,
+        recent_path=RECENT_PATH,
+        persist_recent=cfg["clipboard"]["persist_recent"],
+    )
+    store.prune_recent(time.time())
 
     window.enable_dpi_awareness()
     root = tk.Tk()

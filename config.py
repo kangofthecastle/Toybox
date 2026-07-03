@@ -9,7 +9,7 @@ DEFAULTS = {
     "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False, "github_token": ""},
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True, "layout": "columns",
-                  "sync": False, "sync_passphrase": ""},
+                  "sync": False, "sync_passphrase": "", "persist_recent": True},
     "pet": {"x": None, "y": None, "sensitivity": 1.6, "floor": 0.02,
             "smoothing": 0.4, "idle_fps": 8, "active_fps": 30, "zoom": 4,
             "petting": True, "catnap": True, "greeter": True,
