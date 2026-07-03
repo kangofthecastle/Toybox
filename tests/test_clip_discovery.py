@@ -1,0 +1,57 @@
+import unittest
+
+from clipkit import discovery, protocol
+
+
+class TestBeacon(unittest.TestCase):
+    def setUp(self):
+        _, self.km = protocol.derive_keys("pw")
+
+    def test_encode_parse_round_trip(self):
+        beacon = discovery.encode_beacon(self.km, "node-abc", 50506)
+        self.assertEqual(discovery.parse_beacon(self.km, beacon), ("node-abc", 50506))
+
+    def test_bad_hmac_rejected(self):
+        beacon = discovery.encode_beacon(self.km, "node-abc", 50506)
+        _, wrong = protocol.derive_keys("other")
+        self.assertIsNone(discovery.parse_beacon(wrong, beacon))
+
+    def test_tampered_beacon_rejected(self):
+        beacon = bytearray(discovery.encode_beacon(self.km, "node-abc", 50506))
+        beacon[5] ^= 0x01
+        self.assertIsNone(discovery.parse_beacon(self.km, bytes(beacon)))
+
+    def test_garbage_rejected(self):
+        self.assertIsNone(discovery.parse_beacon(self.km, b"nonsense"))
+        self.assertIsNone(discovery.parse_beacon(self.km, b""))
+
+
+class TestPeerTable(unittest.TestCase):
+    def test_seen_then_live(self):
+        pt = discovery.PeerTable(ttl=10.0)
+        pt.seen("A", "10.0.0.2", 50506, now=100.0)
+        self.assertEqual(pt.live_peers(now=105.0), [("10.0.0.2", 50506)])
+
+    def test_expiry_after_ttl(self):
+        pt = discovery.PeerTable(ttl=10.0)
+        pt.seen("A", "10.0.0.2", 50506, now=100.0)
+        self.assertEqual(pt.live_peers(now=111.0), [])   # 11s > 10s ttl
+
+    def test_refresh_extends_life(self):
+        pt = discovery.PeerTable(ttl=10.0)
+        pt.seen("A", "10.0.0.2", 50506, now=100.0)
+        pt.seen("A", "10.0.0.2", 50506, now=108.0)       # heard again
+        self.assertEqual(pt.live_peers(now=115.0), [("10.0.0.2", 50506)])
+
+    def test_multiple_peers(self):
+        pt = discovery.PeerTable(ttl=10.0)
+        pt.seen("A", "10.0.0.2", 50506, now=100.0)
+        pt.seen("B", "10.0.0.3", 50506, now=100.0)
+        self.assertEqual(sorted(pt.live_peers(now=105.0)),
+                         [("10.0.0.2", 50506), ("10.0.0.3", 50506)])
+
+    def test_expire_prunes_dict(self):
+        pt = discovery.PeerTable(ttl=10.0)
+        pt.seen("A", "10.0.0.2", 50506, now=100.0)
+        pt.expire(now=120.0)
+        self.assertEqual(pt.live_peers(now=120.0), [])
