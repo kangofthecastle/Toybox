@@ -179,6 +179,26 @@ class TestConfig(unittest.TestCase):
         cfg = config.load(self.path)
         self.assertEqual(cfg["clipboard"]["layout"], "columns")
 
+    def test_clipboard_sync_defaults(self):
+        c = config.defaults()["clipboard"]
+        self.assertIs(c["sync"], False)
+        self.assertEqual(c["sync_passphrase"], "")
+
+    def test_clipboard_sync_roundtrip(self):
+        cfg = config.defaults()
+        cfg["clipboard"]["sync"] = True
+        cfg["clipboard"]["sync_passphrase"] = "hunter2"
+        config.save(self.path, cfg)
+        loaded = config.load(self.path)
+        self.assertIs(loaded["clipboard"]["sync"], True)
+        self.assertEqual(loaded["clipboard"]["sync_passphrase"], "hunter2")
+
+    def test_clipboard_sync_wrong_types_fall_back(self):
+        self._write({"clipboard": {"sync": "yes", "sync_passphrase": 123}})
+        c = config.load(self.path)["clipboard"]
+        self.assertIs(c["sync"], False)          # non-bool rejected
+        self.assertEqual(c["sync_passphrase"], "")  # non-str rejected
+
     def test_feeds_default_is_empty_list(self):
         self.assertEqual(config.defaults()["feeds"], [])
 
