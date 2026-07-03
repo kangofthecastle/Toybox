@@ -536,8 +536,8 @@ class ClipboardApp:
         # clipboard sync (peer-to-peer over the LAN); None unless enabled in config
         self.node = clip_sync_win.build_node(
             cfg, clip_sync_win.make_apply(self._set_clipboard, store, self.absorb_seq))
+        self.node = clip_sync_win.start_node(self.node)   # None if sockets can't bind
         if self.node is not None:
-            self.node.start()
             self._drain_sync()
         self._poll()
 

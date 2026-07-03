@@ -36,3 +36,15 @@ def build_node(cfg, apply_fn, instance_id=None,
     return ClipSyncNode(cfg["clipboard"]["sync_passphrase"], apply_fn,
                         instance_id or uuid.uuid4().hex,
                         udp_port=udp_port, tcp_port=tcp_port)
+
+
+def start_node(node):
+    """Start a built node; if its sockets can't bind (e.g. port in use), drop to
+    None so the clipboard toy still launches with sync off instead of crashing."""
+    if node is None:
+        return None
+    try:
+        node.start()
+    except OSError:
+        return None
+    return node

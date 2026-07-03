@@ -68,3 +68,21 @@ class TestBuildNode(unittest.TestCase):
                                         instance_id="X", udp_port=55210, tcp_port=55211)
         self.assertIsNotNone(node)
         self.assertEqual(node._instance_id, "X")   # did not start(); no sockets bound
+
+
+class TestStartNode(unittest.TestCase):
+    def test_none_passes_through(self):
+        self.assertIsNone(clip_sync_win.start_node(None))
+
+    def test_started_node_returned(self):
+        class N:
+            def __init__(self): self.started = False
+            def start(self): self.started = True
+        n = N()
+        self.assertIs(clip_sync_win.start_node(n), n)
+        self.assertTrue(n.started)
+
+    def test_bind_failure_drops_to_none(self):
+        class N:
+            def start(self): raise OSError("addr in use")
+        self.assertIsNone(clip_sync_win.start_node(N()))
