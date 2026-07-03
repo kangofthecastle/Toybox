@@ -178,5 +178,8 @@ class ClipSyncNode:
             except OSError:
                 if self._stop.is_set():
                     return
+                # a transient recvfrom error (e.g. Windows WSAECONNRESET from a
+                # prior ICMP unreachable) must not spin the loop at full CPU
+                self._stop.wait(0.1)
                 continue
             self._handle_beacon(data, addr[0], time.monotonic())
