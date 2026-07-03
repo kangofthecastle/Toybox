@@ -202,6 +202,15 @@ class TestConfig(unittest.TestCase):
     def test_clipboard_persist_recent_default(self):
         self.assertIs(config.defaults()["clipboard"]["persist_recent"], True)
 
+    def test_clipboard_pin_default(self):
+        self.assertIs(config.defaults()["clipboard"]["pin"], False)
+
+    def test_clipboard_pin_roundtrip(self):
+        cfg = config.defaults()
+        cfg["clipboard"]["pin"] = True
+        config.save(self.path, cfg)
+        self.assertIs(config.load(self.path)["clipboard"]["pin"], True)
+
     def test_clipboard_persist_recent_wrong_type_falls_back(self):
         self._write({"clipboard": {"persist_recent": "yes"}})
         c = config.load(self.path)["clipboard"]

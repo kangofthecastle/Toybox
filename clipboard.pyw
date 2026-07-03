@@ -160,6 +160,14 @@ class ClipPanel:
         gear.bind("<Enter>", lambda e: gear.config(fg=FG))
         gear.bind("<Leave>", lambda e: gear.config(fg=DIM))
 
+        self.pin_lbl = tk.Label(hdr, text="📌", bg=PANEL_BG, fg=DIM,
+                                font=("Segoe UI", 11), cursor="hand2")
+        self.pin_lbl.pack(side="right", padx=(0, 8))
+        self.pin_lbl.bind("<Button-1>", lambda e: self._toggle_pin())
+        self.pin_lbl.bind("<Enter>", lambda e: self.pin_lbl.config(bg=ICON_HOVER))
+        self.pin_lbl.bind("<Leave>", lambda e: self._render_pin())
+        self._render_pin()
+
         self.layout_btn = tk.Label(hdr, bg=PANEL_BG, fg=DIM,
                                    font=("Segoe UI", 12), cursor="hand2")
         self.layout_btn.pack(side="right", padx=(0, 8))
@@ -512,6 +520,19 @@ class ClipPanel:
         self.cap_lbl.config(text=("● capture on" if on else "● capture off"),
                             fg=(TEAL if on else DIM))
 
+    def _pinned(self):
+        return bool(self.app.cfg["clipboard"]["pin"])
+
+    def _render_pin(self):
+        # Toggled-on shows a filled (selected) background behind the pin; the
+        # emoji glyph can't be recoloured by fg, so state reads from the bg.
+        self.pin_lbl.config(bg=(SEL_BG if self._pinned() else PANEL_BG))
+
+    def _toggle_pin(self):
+        self.app.cfg["clipboard"]["pin"] = not self._pinned()
+        self.app.save_cfg()
+        self._render_pin()
+
     # -- actions ----------------------------------------------------------
     def _current_clip(self):
         try:
@@ -527,7 +548,10 @@ class ClipPanel:
             self.app.absorb_seq()
         except tk.TclError:
             pass
-        self.close()
+        if self._pinned():
+            self.refresh()   # pinned: stay open; highlight tracks the copied item
+        else:
+            self.close()
 
     def _favorite(self, text):
         self.store.favorite(text)
