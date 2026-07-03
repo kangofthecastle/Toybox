@@ -15,6 +15,7 @@ startup.guard_streams()  # MUST be the first executable statement (pythonw-at-lo
 
 import time
 import tkinter as tk
+from tkinter import ttk
 
 import winkit.window as window
 import winkit.input as wkinput
@@ -62,12 +63,13 @@ DEL_HOVER = "#e0695f"
 CURRENT_BG = "#243b3b"   # teal-tinted row bg for the live-clipboard entry
 CURRENT_BAR = TEAL       # left accent bar for the live-clipboard entry
 
-# Scrollbars: thin and blended into the section bg so they don't visually
-# compete with the content (classic tk.Scrollbar honours these on Windows).
+# Scrollbars: thin, arrowless, muted thumb on a background-blended trough so
+# they don't compete with the content. Rendered as ttk under the 'clam' theme
+# because classic tk.Scrollbar ignores colours on Windows (draws them native).
 SB_TROUGH = COL_BG
-SB_THUMB = "#3a3d42"
-SB_THUMB_ACTIVE = "#565b63"
-SB_WIDTH = 9
+SB_THUMB = "#4a4e57"
+SB_THUMB_ACTIVE = "#5c616b"
+SB_WIDTH = 10          # breadth in px; set via ttk 'arrowsize' (clam ignores 'width')
 
 COL_W = 300
 
@@ -119,6 +121,7 @@ class ClipPanel:
             font=("Segoe UI", 9, "bold"), padx=10, pady=4, cursor="hand2")
         self.remove_btn.bind("<Button-1>", lambda e: self._remove_selected())
 
+        self._init_scrollbar_style()
         self._build_body()
 
         win.bind("<Escape>", lambda e: self.close())
@@ -211,6 +214,32 @@ class ClipPanel:
         self._rebuild_body()
         self._render_layout_btn()
 
+    def _init_scrollbar_style(self):
+        """Style the section scrollbars as thin, arrowless, muted thumbs. Uses
+        ttk under the 'clam' theme because classic tk.Scrollbar ignores colours
+        on Windows; the arrowless layout avoids cramped native arrows at this
+        width."""
+        style = ttk.Style(self.win)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            return
+        for name, orient, side in (
+                ("Clip.Vertical.TScrollbar", "Vertical", "ns"),
+                ("Clip.Horizontal.TScrollbar", "Horizontal", "ew")):
+            try:
+                style.layout(name, [
+                    ("%s.Scrollbar.trough" % orient, {"sticky": side, "children": [
+                        ("%s.Scrollbar.thumb" % orient,
+                         {"expand": "1", "sticky": "nswe"})]})])
+                style.configure(name, troughcolor=SB_TROUGH, background=SB_THUMB,
+                                bordercolor=SB_TROUGH, darkcolor=SB_THUMB,
+                                lightcolor=SB_THUMB, arrowsize=SB_WIDTH)
+                style.map(name, background=[("active", SB_THUMB_ACTIVE),
+                                            ("pressed", SB_THUMB_ACTIVE)])
+            except tk.TclError:
+                pass
+
     def _build_column(self, parent, title, side, fixed_width):
         col = tk.Frame(parent, bg=COL_BG)
         if fixed_width:
@@ -227,12 +256,10 @@ class ClipPanel:
         wrap = tk.Frame(col, bg=COL_BG)
         wrap.pack(fill="both", expand=True)
         canvas = tk.Canvas(wrap, bg=COL_BG, highlightthickness=0)
-        sb_style = dict(troughcolor=SB_TROUGH, bg=SB_THUMB,
-                        activebackground=SB_THUMB_ACTIVE, borderwidth=0,
-                        elementborderwidth=0, highlightthickness=0,
-                        relief="flat", width=SB_WIDTH)
-        vsb = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview, **sb_style)
-        hsb = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview, **sb_style)
+        vsb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview,
+                            style="Clip.Vertical.TScrollbar")
+        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=canvas.xview,
+                            style="Clip.Horizontal.TScrollbar")
         inner = tk.Frame(canvas, bg=COL_BG)
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
