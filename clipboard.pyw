@@ -62,6 +62,13 @@ DEL_HOVER = "#e0695f"
 CURRENT_BG = "#243b3b"   # teal-tinted row bg for the live-clipboard entry
 CURRENT_BAR = TEAL       # left accent bar for the live-clipboard entry
 
+# Scrollbars: thin and blended into the section bg so they don't visually
+# compete with the content (classic tk.Scrollbar honours these on Windows).
+SB_TROUGH = COL_BG
+SB_THUMB = "#3a3d42"
+SB_THUMB_ACTIVE = "#565b63"
+SB_WIDTH = 9
+
 COL_W = 300
 
 
@@ -102,8 +109,11 @@ class ClipPanel:
 
         self._build_header(self.outer)
 
-        self.footer = tk.Frame(self.outer, bg=PANEL_BG, height=34)
-        self.footer.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
+        # Footer holds the contextual "Remove selected" bar; it stays collapsed
+        # (no reserved height) until a selection exists, so idle views show no
+        # empty strip at the bottom.
+        self.footer = tk.Frame(self.outer, bg=PANEL_BG)
+        self.footer.pack(side="bottom", fill="x", padx=8)
         self.remove_btn = tk.Label(
             self.footer, text="", bg="#4a2b2b", fg="#ffd9d4",
             font=("Segoe UI", 9, "bold"), padx=10, pady=4, cursor="hand2")
@@ -217,8 +227,12 @@ class ClipPanel:
         wrap = tk.Frame(col, bg=COL_BG)
         wrap.pack(fill="both", expand=True)
         canvas = tk.Canvas(wrap, bg=COL_BG, highlightthickness=0)
-        vsb = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
-        hsb = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview)
+        sb_style = dict(troughcolor=SB_TROUGH, bg=SB_THUMB,
+                        activebackground=SB_THUMB_ACTIVE, borderwidth=0,
+                        elementborderwidth=0, highlightthickness=0,
+                        relief="flat", width=SB_WIDTH)
+        vsb = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview, **sb_style)
+        hsb = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview, **sb_style)
         inner = tk.Frame(canvas, bg=COL_BG)
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -388,7 +402,7 @@ class ClipPanel:
         n = len(self._selected)
         if n:
             self.remove_btn.config(text="Remove selected (%d)" % n)
-            self.remove_btn.pack(side="left")
+            self.remove_btn.pack(side="left", pady=(6, 8))
         else:
             self.remove_btn.pack_forget()
 
