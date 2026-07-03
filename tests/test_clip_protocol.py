@@ -31,7 +31,12 @@ class TestProtocol(unittest.TestCase):
 
     def test_tampered_tag_returns_none(self):
         frame = bytearray(protocol.seal(self.ke, self.km, "secret text"))
-        frame[8] ^= 0x01                        # flip a bit inside the tag region
+        frame[25] ^= 0x01     # tag occupies bytes 20-51; flip one of its bits
+        self.assertIsNone(protocol.unseal(self.ke, self.km, bytes(frame)))
+
+    def test_tampered_nonce_returns_none(self):
+        frame = bytearray(protocol.seal(self.ke, self.km, "secret text"))
+        frame[8] ^= 0x01      # nonce occupies bytes 4-19; the tag covers it, so this fails auth
         self.assertIsNone(protocol.unseal(self.ke, self.km, bytes(frame)))
 
     def test_bad_magic_returns_none(self):
