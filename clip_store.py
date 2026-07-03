@@ -85,6 +85,30 @@ class ClipStore:
         self._save_favorites()
         self._save_recent()
 
+    def edit(self, old_text, new_text):
+        """Replace an entry's text in place, keeping its list, position and time.
+        No-op (returns False) if new_text is blank, unchanged, or old_text is
+        absent. If new_text already exists elsewhere it is dropped first so a
+        text stays unique across both lists."""
+        if not new_text or not new_text.strip() or new_text == old_text:
+            return False
+        target = None
+        for lst in (self._recent, self._favorites):
+            if self._find(lst, old_text) >= 0:
+                target = lst
+                break
+        if target is None:
+            return False
+        for lst in (self._recent, self._favorites):       # keep text unique
+            k = self._find(lst, new_text)
+            if k >= 0:
+                lst.pop(k)
+        i = self._find(target, old_text)                  # re-find after any pop
+        target[i] = {"text": new_text, "time": target[i]["time"]}
+        self._save_favorites()
+        self._save_recent()
+        return True
+
     def delete(self, text):
         i = self._find(self._recent, text)
         if i >= 0:

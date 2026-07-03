@@ -254,6 +254,56 @@ class TestClipStore(unittest.TestCase):
         s = self.store_p()
         self.assertEqual(s.recent(), [])
 
+    # --- edit -----------------------------------------------------------
+    def test_edit_recent_text_in_place(self):
+        s = self.store()
+        s.add("a", 1.0)
+        s.add("b", 2.0)                       # recent: b, a
+        self.assertTrue(s.edit("a", "a2"))
+        self.assertEqual(self.texts(s.recent()), ["b", "a2"])   # position kept
+        self.assertEqual(s.recent()[1]["time"], 1.0)            # time kept
+
+    def test_edit_favorite_keeps_it_favorite(self):
+        s = self.store()
+        s.add("a", 1.0)
+        s.favorite("a")
+        self.assertTrue(s.edit("a", "a2"))
+        self.assertEqual(self.texts(s.favorites()), ["a2"])
+        self.assertEqual(s.recent(), [])
+
+    def test_edit_empty_or_whitespace_is_noop(self):
+        s = self.store()
+        s.add("a", 1.0)
+        self.assertFalse(s.edit("a", "   "))
+        self.assertFalse(s.edit("a", ""))
+        self.assertEqual(self.texts(s.recent()), ["a"])
+
+    def test_edit_same_text_is_noop(self):
+        s = self.store()
+        s.add("a", 1.0)
+        self.assertFalse(s.edit("a", "a"))
+        self.assertEqual(self.texts(s.recent()), ["a"])
+
+    def test_edit_unknown_text_is_noop(self):
+        s = self.store()
+        s.add("a", 1.0)
+        self.assertFalse(s.edit("zzz", "new"))
+        self.assertEqual(self.texts(s.recent()), ["a"])
+
+    def test_edit_dedupes_when_new_text_already_exists(self):
+        s = self.store()
+        s.add("a", 1.0)
+        s.add("b", 2.0)                       # recent: b, a
+        self.assertTrue(s.edit("a", "b"))     # a -> b; the pre-existing b is dropped
+        self.assertEqual(self.texts(s.recent()), ["b"])
+
+    def test_edit_persists(self):
+        s = self.store_p()
+        s.add("a", 1.0)
+        s.edit("a", "a2")
+        s2 = self.store_p()
+        self.assertEqual(self.texts(s2.recent()), ["a2"])
+
     def test_failed_save_leaves_no_temp_file(self):
         # A write failure (e.g. an AV/indexer lock on os.replace) must not leave
         # an orphaned .tmp holding plaintext recent entries behind.
