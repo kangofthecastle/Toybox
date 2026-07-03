@@ -51,6 +51,7 @@ IC_OUTLINE = "#1f3a3a"
 PANEL_BG = "#1e1f22"
 COL_BG = "#212429"
 ROW_HOVER = "#2a2e36"
+ICON_HOVER = "#3a3f4a"   # per-icon hover highlight (brighter than the row hover)
 SEL_BG = "#314059"
 FG = "#e8e8e8"
 DIM = "#8a8d92"
@@ -382,15 +383,48 @@ class ClipPanel:
                 if isinstance(c, tk.Label):
                     c.config(bg=b)
             accent.config(bg=(CURRENT_BAR if is_current else b))
-        row.bind("<Enter>", lambda e: hover(True))
-        row.bind("<Leave>", lambda e: hover(False))
+
+        # Keep the row highlight stable while the pointer moves across the row's
+        # children (icons/text): apply it once on real entry and drop it only
+        # when the pointer truly leaves the row, so per-icon hover can layer on
+        # top without the two fighting over child backgrounds.
+        state = {"on": False}
+
+        def on_enter(_e):
+            if not state["on"]:
+                state["on"] = True
+                hover(True)
+
+        def on_leave(e):
+            w = row.winfo_containing(e.x_root, e.y_root)
+            while w is not None:
+                if w is row:
+                    return
+                w = getattr(w, "master", None)
+            state["on"] = False
+            hover(False)
+
+        row.bind("<Enter>", on_enter)
+        row.bind("<Leave>", on_leave)
         return row, bg
 
-    def _icon_btn(self, row, glyph, color, bg, cmd, side="left"):
+    def _add_hover(self, widget, hover_fg):
+        """Light the icon on hover: a brighter background (works for the colour
+        emoji too) plus a semantic foreground for the monochrome glyphs. On
+        leave, blend back into the row's current background."""
+        orig_fg = widget.cget("fg")
+        widget.bind("<Enter>",
+                    lambda e: widget.config(fg=hover_fg, bg=ICON_HOVER), add="+")
+        widget.bind("<Leave>",
+                    lambda e: widget.config(fg=orig_fg, bg=widget.master.cget("bg")),
+                    add="+")
+
+    def _icon_btn(self, row, glyph, color, bg, cmd, side="left", hover_fg=None):
         b = tk.Label(row, text=glyph, bg=bg, fg=color, width=2,
                      font=("Segoe UI", 10), cursor="hand2")
         b.pack(side=side)
         b.bind("<Button-1>", lambda e: cmd())
+        self._add_hover(b, hover_fg if hover_fg is not None else color)
         return b
 
     def _time_lbl(self, row, entry, bg):
@@ -420,11 +454,14 @@ class ClipPanel:
                        font=("Segoe UI", 10), cursor="hand2")
         chk.pack(side="left", padx=(2, 0))
         chk.bind("<Button-1>", lambda e, i=index, t=text: self._on_check(i, t, e))
+        self._add_hover(chk, TEAL)
         star = tk.Label(row, text="☆", bg=bg, fg=STAR_OFF, width=2,
                         font=("Segoe UI", 10), cursor="hand2")
         star.pack(side="left")
         star.bind("<Button-1>", lambda e, t=text: self._favorite(t))
-        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._add_hover(star, STAR_ON)
+        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t),
+                       hover_fg=DEL_HOVER)
         self._icon_btn(row, "🖊", DIM, bg, lambda t=text: self._edit(t))
         self._time_lbl(row, entry, bg)
         self._len_lbl(row, entry, bg)
@@ -435,7 +472,8 @@ class ClipPanel:
         is_current = (text == self._current)
         row, bg = self._row_frame(self.fav_inner, text, is_current)
         self._icon_btn(row, "★", STAR_ON, bg, lambda t=text: self._unfavorite(t))
-        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t),
+                       hover_fg=DEL_HOVER)
         self._icon_btn(row, "🖊", DIM, bg, lambda t=text: self._edit(t))
         self._time_lbl(row, entry, bg)
         self._len_lbl(row, entry, bg)
