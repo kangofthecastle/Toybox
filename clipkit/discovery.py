@@ -6,6 +6,7 @@ discovers only its own peers, and a stray beacon cannot point it at a rogue
 endpoint."""
 import hmac
 import struct
+import threading
 
 _BEACON_MAGIC = b"TBCB"               # Toy Box Clip Beacon
 _TAG_LEN = 32
@@ -48,14 +49,18 @@ class PeerTable:
     def __init__(self, ttl=15.0):
         self.ttl = ttl
         self._peers = {}              # instance_id -> (addr, tcp_port, last_seen)
+        self._lock = threading.Lock()
 
     def seen(self, instance_id, addr, tcp_port, now):
-        self._peers[instance_id] = (addr, tcp_port, now)
+        with self._lock:
+            self._peers[instance_id] = (addr, tcp_port, now)
 
     def live_peers(self, now):
-        return [(addr, port) for (addr, port, ts) in self._peers.values()
-                if now - ts <= self.ttl]
+        with self._lock:
+            return [(addr, port) for (addr, port, ts) in self._peers.values()
+                    if now - ts <= self.ttl]
 
     def expire(self, now):
-        self._peers = {k: v for k, v in self._peers.items()
-                       if now - v[2] <= self.ttl}
+        with self._lock:
+            self._peers = {k: v for k, v in self._peers.items()
+                           if now - v[2] <= self.ttl}

@@ -68,3 +68,30 @@ class TestPeerTable(unittest.TestCase):
         pt.seen("A", "10.0.0.2", 50506, now=100.0)
         pt.expire(now=120.0)
         self.assertEqual(pt.live_peers(now=120.0), [])
+
+    def test_concurrent_seen_and_live_peers_is_safe(self):
+        import sys
+        import threading
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-9)   # maximise thread interleaving to expose the race
+        try:
+            pt = discovery.PeerTable(ttl=1e9)
+            errors = []
+            def writer():
+                try:
+                    for i in range(10000):
+                        pt.seen("id%d" % i, "10.0.0.2", 50506, now=float(i))
+                except Exception as e:  # pragma: no cover - failure path
+                    errors.append(e)
+            def reader():
+                try:
+                    for _ in range(10000):
+                        pt.live_peers(now=1e9)
+                except Exception as e:
+                    errors.append(e)
+            threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+            for t in threads: t.start()
+            for t in threads: t.join()
+        finally:
+            sys.setswitchinterval(old_interval)
+        self.assertEqual(errors, [])
