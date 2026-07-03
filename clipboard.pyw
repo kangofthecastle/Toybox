@@ -21,6 +21,7 @@ import winkit.input as wkinput
 import clip_store
 import clip_view
 import config
+import clip_sync_win
 import timeago
 from selection import shift_range
 
@@ -30,6 +31,7 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 FAV_PATH = os.path.join(HERE, "favorites.json")
 
 CAPTURE_MS = 250
+SYNC_DRAIN_MS = 120
 DRAG_THRESHOLD = 4
 
 ICON = 44
@@ -531,6 +533,12 @@ class ClipboardApp:
         except tk.TclError:
             pass
         self._last_seq = wkinput.clipboard_sequence()
+        # clipboard sync (peer-to-peer over the LAN); None unless enabled in config
+        self.node = clip_sync_win.build_node(
+            cfg, clip_sync_win.make_apply(self._set_clipboard, store, self.absorb_seq))
+        if self.node is not None:
+            self.node.start()
+            self._drain_sync()
         self._poll()
 
         try:
@@ -624,18 +632,37 @@ class ClipboardApp:
     def absorb_seq(self):
         self._last_seq = wkinput.clipboard_sequence()
 
+    def _set_clipboard(self, text):
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        except tk.TclError:
+            pass
+
+    def _drain_sync(self):
+        if self.node is None:
+            return
+        try:
+            self.node.poll_incoming()
+        finally:
+            self.root.after(SYNC_DRAIN_MS, self._drain_sync)
+
     def _poll(self):
         try:
             seq = wkinput.clipboard_sequence()
             if seq != self._last_seq:
                 self._last_seq = seq
-                if self.cfg["clipboard"]["capture"]:
+                text = None
+                if self.cfg["clipboard"]["capture"] or self.node is not None:
                     try:
                         text = self.root.clipboard_get()
                     except tk.TclError:
                         text = None
-                    if text:
+                if text:
+                    if self.cfg["clipboard"]["capture"]:
                         self.store.add(text, time.time())
+                    if self.node is not None:
+                        self.node.local_change(text)
         finally:
             self.root.after(CAPTURE_MS, self._poll)
 
@@ -668,6 +695,9 @@ def main():
     if not _smoke_ms() and not startup.acquire_single_instance("Toybox_clipboard"):
         return
     cfg = config.load(CFG_PATH)
+    if os.environ.get("TOYBOX_SMOKE_SYNC"):        # exercise the sync path under smoke
+        cfg["clipboard"]["sync"] = True
+        cfg["clipboard"]["sync_passphrase"] = "smoke-pass"
     store = clip_store.ClipStore(cfg["clipboard"]["max_items"], FAV_PATH)
 
     window.enable_dpi_awareness()
@@ -681,6 +711,8 @@ def main():
             _smoke_exercise(app)
         root.after(ms, root.destroy)
     root.mainloop()
+    if app.node is not None:
+        app.node.stop()
 
 
 if __name__ == "__main__":
