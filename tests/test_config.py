@@ -205,6 +205,9 @@ class TestConfig(unittest.TestCase):
     def test_clipboard_pin_default(self):
         self.assertIs(config.defaults()["clipboard"]["pin"], False)
 
+    def test_clipboard_keep_open_default(self):
+        self.assertIs(config.defaults()["clipboard"]["keep_open"], False)
+
     def test_clipboard_pin_roundtrip(self):
         cfg = config.defaults()
         cfg["clipboard"]["pin"] = True

@@ -533,6 +533,13 @@ class ClipPanel:
         self.app.save_cfg()
         self._render_pin()
 
+    def _keep_open(self):
+        return bool(self.app.cfg["clipboard"]["keep_open"])
+
+    def _toggle_keep_open(self):
+        self.app.cfg["clipboard"]["keep_open"] = not self._keep_open()
+        self.app.save_cfg()
+
     # -- actions ----------------------------------------------------------
     def _current_clip(self):
         try:
@@ -658,6 +665,11 @@ class ClipPanel:
         m = tk.Menu(self.win, tearoff=0)
         m.add_command(label="Clear history (All)", command=app._clear_history)
         m.add_separator()
+        m.add_command(
+            label=("✓ Keep open when unfocused" if self._keep_open()
+                   else "Keep open when unfocused"),
+            command=self._toggle_keep_open)
+        m.add_separator()
         enabled = startup.is_run_at_startup("Toybox_clipboard")
         m.add_command(label="✓ Run at login" if enabled else "Run at login",
                       command=app._toggle_startup)
@@ -678,7 +690,7 @@ class ClipPanel:
                 pass
 
     def _on_focus_out(self, event):
-        if self._suppress_close:
+        if self._suppress_close or self._keep_open():
             return
         try:
             if self.win.focus_get() is None:

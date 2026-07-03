@@ -86,6 +86,39 @@ class TestClipPanelPin(unittest.TestCase):
         self.panel._copy_and_close("hello")
         self.assertTrue(self.panel.win.winfo_exists())
 
+    def test_keep_open_survives_focus_out(self):
+        # the gear "keep open" setting (separate from the header pin) keeps the
+        # panel alive when focus leaves it (clicking away, moving it around)
+        self.app.cfg["clipboard"]["keep_open"] = True
+        self._build()
+        self.panel.win.focus_get = lambda: None   # force "focus left the app"
+        self.panel._on_focus_out(None)
+        self.assertTrue(self.panel.win.winfo_exists())
+
+    def test_focus_out_closes_when_keep_open_off(self):
+        self.app.cfg["clipboard"]["keep_open"] = False
+        self._build()
+        self.panel.win.focus_get = lambda: None
+        self.panel._on_focus_out(None)
+        self.assertFalse(self.panel.win.winfo_exists())
+
+    def test_header_pin_does_not_affect_focus_out(self):
+        # header pin governs copy-behaviour only; on its own it must NOT keep the
+        # panel open on focus loss (that is the separate keep_open setting)
+        self.app.cfg["clipboard"]["pin"] = True
+        self.app.cfg["clipboard"]["keep_open"] = False
+        self._build()
+        self.panel.win.focus_get = lambda: None
+        self.panel._on_focus_out(None)
+        self.assertFalse(self.panel.win.winfo_exists())
+
+    def test_toggle_keep_open_persists(self):
+        self.app.cfg["clipboard"]["keep_open"] = False
+        self._build()
+        self.panel._toggle_keep_open()
+        self.assertIs(self.app.cfg["clipboard"]["keep_open"], True)
+        self.assertGreaterEqual(self.app.saved, 1)
+
     def test_toggle_pin_persists_and_renders(self):
         self.app.cfg["clipboard"]["pin"] = False
         self._build()
