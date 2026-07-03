@@ -20,7 +20,8 @@ _POLL_S = 0.3
 
 def read_clipboard():
     try:
-        result = subprocess.run(["pbpaste"], capture_output=True, text=True)
+        result = subprocess.run(["pbpaste"], capture_output=True, text=True,
+                                encoding="utf-8")
         if result.returncode != 0:
             return ""
         return result.stdout
@@ -30,7 +31,8 @@ def read_clipboard():
 
 def write_clipboard(text):
     try:
-        subprocess.run(["pbcopy"], input=text.encode("utf-8"))
+        # capture_output keeps pbcopy's streams off the headless daemon's terminal
+        subprocess.run(["pbcopy"], input=text.encode("utf-8"), capture_output=True)
     except OSError:
         pass
 

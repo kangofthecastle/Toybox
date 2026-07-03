@@ -27,6 +27,11 @@ class TestClipboardIO(unittest.TestCase):
         with mock.patch("clipsync_mac.subprocess.run", side_effect=OSError):
             self.assertEqual(clipsync_mac.read_clipboard(), "")
 
+    def test_read_clipboard_empty_on_nonzero_returncode(self):
+        fake = mock.Mock(returncode=1, stdout="garbage")
+        with mock.patch("clipsync_mac.subprocess.run", return_value=fake):
+            self.assertEqual(clipsync_mac.read_clipboard(), "")
+
     def test_write_clipboard_pipes_to_pbcopy(self):
         with mock.patch("clipsync_mac.subprocess.run") as run:
             clipsync_mac.write_clipboard("hello mac")
