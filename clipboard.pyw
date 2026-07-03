@@ -97,6 +97,7 @@ class ClipPanel:
         self._all_texts = []     # texts currently shown in ALL (view order)
         self._suppress_close = False  # set while the options menu is open
         self._current = None     # text of the live system clipboard (for highlight)
+        self.select_all_chk = None   # ALL-section "select all" box (built in _build_column)
         self.layout = clip_view.normalize_layout(app.cfg["clipboard"]["layout"])
         self.panel_w, self.panel_h = clip_view.panel_size(self.layout)
 
@@ -250,8 +251,18 @@ class ClipPanel:
         else:
             col.pack(side=side, fill="both", expand=True,
                      pady=(0, 6) if side == "top" else (6, 0))
-        tk.Label(col, text=title, bg=COL_BG, fg=DIM, anchor="w",
-                 font=("Segoe UI", 8, "bold")).pack(fill="x", padx=8, pady=(6, 2))
+        if title == "ALL":
+            head = tk.Frame(col, bg=COL_BG)
+            head.pack(fill="x", padx=8, pady=(6, 2))
+            self.select_all_chk = tk.Label(head, text="☐", bg=COL_BG, fg=STAR_OFF,
+                                           font=("Segoe UI", 10), cursor="hand2")
+            self.select_all_chk.pack(side="left", padx=(0, 6))
+            self.select_all_chk.bind("<Button-1>", lambda e: self._toggle_select_all())
+            tk.Label(head, text=title, bg=COL_BG, fg=DIM, anchor="w",
+                     font=("Segoe UI", 8, "bold")).pack(side="left")
+        else:
+            tk.Label(col, text=title, bg=COL_BG, fg=DIM, anchor="w",
+                     font=("Segoe UI", 8, "bold")).pack(fill="x", padx=8, pady=(6, 2))
 
         wrap = tk.Frame(col, bg=COL_BG)
         wrap.pack(fill="both", expand=True)
@@ -339,6 +350,7 @@ class ClipPanel:
         for e in favs:
             self._fav_row(e)
         self._render_remove()
+        self._render_select_all()
         for c in (self.all_canvas, self.fav_canvas):
             try:
                 c.xview_moveto(0)
@@ -432,6 +444,26 @@ class ClipPanel:
             self.remove_btn.pack(side="left", pady=(6, 8))
         else:
             self.remove_btn.pack_forget()
+
+    def _render_select_all(self):
+        # Checked only when every shown ALL row is selected; teal whenever any
+        # is selected (so a partial selection reads as ☐ + teal).
+        if self.select_all_chk is None:
+            return
+        shown = len(self._all_texts)
+        sel = len(self._selected)
+        all_on = shown > 0 and sel == shown
+        self.select_all_chk.config(text="☑" if all_on else "☐",
+                                   fg=TEAL if sel else STAR_OFF)
+
+    def _toggle_select_all(self):
+        shown = set(self._all_texts)
+        if shown and shown <= self._selected:   # every shown row already checked
+            self._selected -= shown
+        else:
+            self._selected |= shown
+        self._anchor = None
+        self.refresh()
 
     def _render_capture(self):
         on = bool(self.app.cfg["clipboard"]["capture"])
