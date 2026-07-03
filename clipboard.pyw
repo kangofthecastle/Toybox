@@ -152,12 +152,12 @@ class ClipPanel:
         close.bind("<Enter>", lambda e: close.config(fg=DEL_HOVER))
         close.bind("<Leave>", lambda e: close.config(fg=DIM))
 
-        burger = tk.Label(hdr, text="≡", bg=PANEL_BG, fg=DIM,
-                          font=("Segoe UI", 13), cursor="hand2")
-        burger.pack(side="right", padx=(0, 8))
-        burger.bind("<Button-1>", lambda e: self._open_options(burger))
-        burger.bind("<Enter>", lambda e: burger.config(fg=FG))
-        burger.bind("<Leave>", lambda e: burger.config(fg=DIM))
+        gear = tk.Label(hdr, text="⚙", bg=PANEL_BG, fg=DIM,
+                        font=("Segoe UI", 12), cursor="hand2")
+        gear.pack(side="right", padx=(0, 8))
+        gear.bind("<Button-1>", lambda e: self._open_options(gear))
+        gear.bind("<Enter>", lambda e: gear.config(fg=FG))
+        gear.bind("<Leave>", lambda e: gear.config(fg=DIM))
 
         self.layout_btn = tk.Label(hdr, bg=PANEL_BG, fg=DIM,
                                    font=("Segoe UI", 12), cursor="hand2")
@@ -395,12 +395,14 @@ class ClipPanel:
 
     def _time_lbl(self, row, entry, bg):
         ago = timeago.format_ago(time.time() - entry["time"])
-        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="w",
+        # right-aligned so short times ("4m", "6d") sit next to the count instead
+        # of leaving a big trailing gap before it
+        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="e",
                  font=("Segoe UI", 8)).pack(side="left")
 
     def _len_lbl(self, row, entry, bg):
         tk.Label(row, text=str(len(entry["text"])), bg=bg, fg=DIM, width=5,
-                 anchor="w", font=("Segoe UI", 8)).pack(side="left")
+                 anchor="w", font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
 
     def _text_lbl(self, row, entry, bg):
         txt = tk.Label(row, text=clip_view.flatten_line(entry["text"]), bg=bg,
@@ -423,6 +425,7 @@ class ClipPanel:
         star.pack(side="left")
         star.bind("<Button-1>", lambda e, t=text: self._favorite(t))
         self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._icon_btn(row, "✎", DIM, bg, lambda t=text: self._edit(t))
         self._time_lbl(row, entry, bg)
         self._len_lbl(row, entry, bg)
         self._text_lbl(row, entry, bg)
@@ -433,6 +436,7 @@ class ClipPanel:
         row, bg = self._row_frame(self.fav_inner, text, is_current)
         self._icon_btn(row, "★", STAR_ON, bg, lambda t=text: self._unfavorite(t))
         self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._icon_btn(row, "✎", DIM, bg, lambda t=text: self._edit(t))
         self._time_lbl(row, entry, bg)
         self._len_lbl(row, entry, bg)
         self._text_lbl(row, entry, bg)
@@ -499,6 +503,66 @@ class ClipPanel:
         self.store.delete(text)
         self._selected.discard(text)
         self.refresh()
+
+    def _apply_edit(self, old_text, new_text):
+        # Commit an edit to the store and keep the ALL selection in sync (a
+        # checked row that was renamed stays checked under its new text).
+        if self.store.edit(old_text, new_text) and old_text in self._selected:
+            self._selected.discard(old_text)
+            if new_text and new_text.strip():
+                self._selected.add(new_text)
+        self.refresh()
+
+    def _edit(self, text):
+        # Small editor popup: change a clip's text in place (works for ALL and
+        # FAVORITES). _suppress_close keeps the panel open while it's up.
+        self._suppress_close = True
+        top = tk.Toplevel(self.win)
+        top.title("Edit clip")
+        top.configure(bg=PANEL_BG)
+        top.attributes("-topmost", True)
+        try:
+            top.geometry("460x260+%d+%d" % (self.win.winfo_rootx() + 40,
+                                            self.win.winfo_rooty() + 60))
+        except tk.TclError:
+            top.geometry("460x260")
+
+        txt = tk.Text(top, wrap="word", bg=ENTRY_BG, fg=FG, insertbackground=FG,
+                      relief="flat", font=("Consolas", 10), undo=True,
+                      highlightthickness=1, highlightbackground=BORDER,
+                      highlightcolor=TEAL)
+        txt.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+        txt.insert("1.0", text)
+
+        bar = tk.Frame(top, bg=PANEL_BG)
+        bar.pack(fill="x", padx=10, pady=(0, 10))
+
+        def done():
+            self._suppress_close = False
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+
+        def save():
+            new = txt.get("1.0", "end-1c")
+            done()
+            self._apply_edit(text, new)
+
+        save_btn = tk.Label(bar, text="Save", bg=SEL_BG, fg=FG, padx=12, pady=4,
+                            font=("Segoe UI", 9, "bold"), cursor="hand2")
+        save_btn.pack(side="right")
+        save_btn.bind("<Button-1>", lambda e: save())
+        cancel_btn = tk.Label(bar, text="Cancel", bg=ENTRY_BG, fg=DIM, padx=12,
+                              pady=4, font=("Segoe UI", 9), cursor="hand2")
+        cancel_btn.pack(side="right", padx=(0, 8))
+        cancel_btn.bind("<Button-1>", lambda e: done())
+
+        top.protocol("WM_DELETE_WINDOW", done)
+        top.bind("<Escape>", lambda e: done())
+        txt.bind("<Control-Return>", lambda e: (save(), "break"))
+        top.lift()
+        top.after(10, txt.focus_set)
 
     def _on_check(self, index, text, event):
         if event.state & 0x0001 and self._anchor is not None:  # Shift
