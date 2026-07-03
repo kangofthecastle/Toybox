@@ -15,6 +15,7 @@ startup.guard_streams()  # MUST be the first executable statement (pythonw-at-lo
 
 import time
 import tkinter as tk
+from tkinter import ttk
 
 import winkit.window as window
 import winkit.input as wkinput
@@ -29,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
 LOG_PATH = os.path.join(HERE, "toybox.log")
 FAV_PATH = os.path.join(HERE, "favorites.json")
+RECENT_PATH = os.path.join(HERE, "recent.json")
 
 CAPTURE_MS = 250
 SYNC_DRAIN_MS = 120
@@ -49,6 +51,7 @@ IC_OUTLINE = "#1f3a3a"
 PANEL_BG = "#1e1f22"
 COL_BG = "#212429"
 ROW_HOVER = "#2a2e36"
+ICON_HOVER = "#3a3f4a"   # per-icon hover highlight (brighter than the row hover)
 SEL_BG = "#314059"
 FG = "#e8e8e8"
 DIM = "#8a8d92"
@@ -60,6 +63,14 @@ STAR_OFF = "#70747a"
 DEL_HOVER = "#e0695f"
 CURRENT_BG = "#243b3b"   # teal-tinted row bg for the live-clipboard entry
 CURRENT_BAR = TEAL       # left accent bar for the live-clipboard entry
+
+# Scrollbars: thin, arrowless, muted thumb on a background-blended trough so
+# they don't compete with the content. Rendered as ttk under the 'clam' theme
+# because classic tk.Scrollbar ignores colours on Windows (draws them native).
+SB_TROUGH = COL_BG
+SB_THUMB = "#4a4e57"
+SB_THUMB_ACTIVE = "#5c616b"
+SB_WIDTH = 10          # breadth in px; set via ttk 'arrowsize' (clam ignores 'width')
 
 COL_W = 300
 
@@ -87,6 +98,7 @@ class ClipPanel:
         self._all_texts = []     # texts currently shown in ALL (view order)
         self._suppress_close = False  # set while the options menu is open
         self._current = None     # text of the live system clipboard (for highlight)
+        self.select_all_chk = None   # ALL-section "select all" box (built in _build_column)
         self.layout = clip_view.normalize_layout(app.cfg["clipboard"]["layout"])
         self.panel_w, self.panel_h = clip_view.panel_size(self.layout)
 
@@ -101,13 +113,17 @@ class ClipPanel:
 
         self._build_header(self.outer)
 
-        self.footer = tk.Frame(self.outer, bg=PANEL_BG, height=34)
-        self.footer.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
+        # Footer holds the contextual "Remove selected" bar; it stays collapsed
+        # (no reserved height) until a selection exists, so idle views show no
+        # empty strip at the bottom.
+        self.footer = tk.Frame(self.outer, bg=PANEL_BG)
+        self.footer.pack(side="bottom", fill="x", padx=8)
         self.remove_btn = tk.Label(
             self.footer, text="", bg="#4a2b2b", fg="#ffd9d4",
             font=("Segoe UI", 9, "bold"), padx=10, pady=4, cursor="hand2")
         self.remove_btn.bind("<Button-1>", lambda e: self._remove_selected())
 
+        self._init_scrollbar_style()
         self._build_body()
 
         win.bind("<Escape>", lambda e: self.close())
@@ -137,12 +153,20 @@ class ClipPanel:
         close.bind("<Enter>", lambda e: close.config(fg=DEL_HOVER))
         close.bind("<Leave>", lambda e: close.config(fg=DIM))
 
-        burger = tk.Label(hdr, text="≡", bg=PANEL_BG, fg=DIM,
-                          font=("Segoe UI", 13), cursor="hand2")
-        burger.pack(side="right", padx=(0, 8))
-        burger.bind("<Button-1>", lambda e: self._open_options(burger))
-        burger.bind("<Enter>", lambda e: burger.config(fg=FG))
-        burger.bind("<Leave>", lambda e: burger.config(fg=DIM))
+        gear = tk.Label(hdr, text="⚙", bg=PANEL_BG, fg=DIM,
+                        font=("Segoe UI", 12), cursor="hand2")
+        gear.pack(side="right", padx=(0, 8))
+        gear.bind("<Button-1>", lambda e: self._open_options(gear))
+        gear.bind("<Enter>", lambda e: gear.config(fg=FG))
+        gear.bind("<Leave>", lambda e: gear.config(fg=DIM))
+
+        self.pin_lbl = tk.Label(hdr, text="📌", bg=PANEL_BG, fg=DIM,
+                                font=("Segoe UI", 11), cursor="hand2")
+        self.pin_lbl.pack(side="right", padx=(0, 8))
+        self.pin_lbl.bind("<Button-1>", lambda e: self._toggle_pin())
+        self.pin_lbl.bind("<Enter>", lambda e: self.pin_lbl.config(bg=ICON_HOVER))
+        self.pin_lbl.bind("<Leave>", lambda e: self._render_pin())
+        self._render_pin()
 
         self.layout_btn = tk.Label(hdr, bg=PANEL_BG, fg=DIM,
                                    font=("Segoe UI", 12), cursor="hand2")
@@ -200,6 +224,32 @@ class ClipPanel:
         self._rebuild_body()
         self._render_layout_btn()
 
+    def _init_scrollbar_style(self):
+        """Style the section scrollbars as thin, arrowless, muted thumbs. Uses
+        ttk under the 'clam' theme because classic tk.Scrollbar ignores colours
+        on Windows; the arrowless layout avoids cramped native arrows at this
+        width."""
+        style = ttk.Style(self.win)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            return
+        for name, orient, side in (
+                ("Clip.Vertical.TScrollbar", "Vertical", "ns"),
+                ("Clip.Horizontal.TScrollbar", "Horizontal", "ew")):
+            try:
+                style.layout(name, [
+                    ("%s.Scrollbar.trough" % orient, {"sticky": side, "children": [
+                        ("%s.Scrollbar.thumb" % orient,
+                         {"expand": "1", "sticky": "nswe"})]})])
+                style.configure(name, troughcolor=SB_TROUGH, background=SB_THUMB,
+                                bordercolor=SB_TROUGH, darkcolor=SB_THUMB,
+                                lightcolor=SB_THUMB, arrowsize=SB_WIDTH)
+                style.map(name, background=[("active", SB_THUMB_ACTIVE),
+                                            ("pressed", SB_THUMB_ACTIVE)])
+            except tk.TclError:
+                pass
+
     def _build_column(self, parent, title, side, fixed_width):
         col = tk.Frame(parent, bg=COL_BG)
         if fixed_width:
@@ -210,14 +260,26 @@ class ClipPanel:
         else:
             col.pack(side=side, fill="both", expand=True,
                      pady=(0, 6) if side == "top" else (6, 0))
-        tk.Label(col, text=title, bg=COL_BG, fg=DIM, anchor="w",
-                 font=("Segoe UI", 8, "bold")).pack(fill="x", padx=8, pady=(6, 2))
+        if title == "ALL":
+            head = tk.Frame(col, bg=COL_BG)
+            head.pack(fill="x", padx=8, pady=(6, 2))
+            self.select_all_chk = tk.Label(head, text="☐", bg=COL_BG, fg=STAR_OFF,
+                                           font=("Segoe UI", 10), cursor="hand2")
+            self.select_all_chk.pack(side="left", padx=(0, 6))
+            self.select_all_chk.bind("<Button-1>", lambda e: self._toggle_select_all())
+            tk.Label(head, text=title, bg=COL_BG, fg=DIM, anchor="w",
+                     font=("Segoe UI", 8, "bold")).pack(side="left")
+        else:
+            tk.Label(col, text=title, bg=COL_BG, fg=DIM, anchor="w",
+                     font=("Segoe UI", 8, "bold")).pack(fill="x", padx=8, pady=(6, 2))
 
         wrap = tk.Frame(col, bg=COL_BG)
         wrap.pack(fill="both", expand=True)
         canvas = tk.Canvas(wrap, bg=COL_BG, highlightthickness=0)
-        vsb = tk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
-        hsb = tk.Scrollbar(wrap, orient="horizontal", command=canvas.xview)
+        vsb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview,
+                            style="Clip.Vertical.TScrollbar")
+        hsb = ttk.Scrollbar(wrap, orient="horizontal", command=canvas.xview,
+                            style="Clip.Horizontal.TScrollbar")
         inner = tk.Frame(canvas, bg=COL_BG)
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -297,6 +359,7 @@ class ClipPanel:
         for e in favs:
             self._fav_row(e)
         self._render_remove()
+        self._render_select_all()
         for c in (self.all_canvas, self.fav_canvas):
             try:
                 c.xview_moveto(0)
@@ -328,25 +391,60 @@ class ClipPanel:
                 if isinstance(c, tk.Label):
                     c.config(bg=b)
             accent.config(bg=(CURRENT_BAR if is_current else b))
-        row.bind("<Enter>", lambda e: hover(True))
-        row.bind("<Leave>", lambda e: hover(False))
+
+        # Keep the row highlight stable while the pointer moves across the row's
+        # children (icons/text): apply it once on real entry and drop it only
+        # when the pointer truly leaves the row, so per-icon hover can layer on
+        # top without the two fighting over child backgrounds.
+        state = {"on": False}
+
+        def on_enter(_e):
+            if not state["on"]:
+                state["on"] = True
+                hover(True)
+
+        def on_leave(e):
+            w = row.winfo_containing(e.x_root, e.y_root)
+            while w is not None:
+                if w is row:
+                    return
+                w = getattr(w, "master", None)
+            state["on"] = False
+            hover(False)
+
+        row.bind("<Enter>", on_enter)
+        row.bind("<Leave>", on_leave)
         return row, bg
 
-    def _icon_btn(self, row, glyph, color, bg, cmd, side="left"):
+    def _add_hover(self, widget, hover_fg):
+        """Light the icon on hover: a brighter background (works for the colour
+        emoji too) plus a semantic foreground for the monochrome glyphs. On
+        leave, blend back into the row's current background."""
+        orig_fg = widget.cget("fg")
+        widget.bind("<Enter>",
+                    lambda e: widget.config(fg=hover_fg, bg=ICON_HOVER), add="+")
+        widget.bind("<Leave>",
+                    lambda e: widget.config(fg=orig_fg, bg=widget.master.cget("bg")),
+                    add="+")
+
+    def _icon_btn(self, row, glyph, color, bg, cmd, side="left", hover_fg=None):
         b = tk.Label(row, text=glyph, bg=bg, fg=color, width=2,
                      font=("Segoe UI", 10), cursor="hand2")
         b.pack(side=side)
         b.bind("<Button-1>", lambda e: cmd())
+        self._add_hover(b, hover_fg if hover_fg is not None else color)
         return b
 
     def _time_lbl(self, row, entry, bg):
         ago = timeago.format_ago(time.time() - entry["time"])
-        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="w",
+        # right-aligned so short times ("4m", "6d") sit next to the count instead
+        # of leaving a big trailing gap before it
+        tk.Label(row, text=ago, bg=bg, fg=DIM, width=8, anchor="e",
                  font=("Segoe UI", 8)).pack(side="left")
 
     def _len_lbl(self, row, entry, bg):
         tk.Label(row, text=str(len(entry["text"])), bg=bg, fg=DIM, width=5,
-                 anchor="w", font=("Segoe UI", 8)).pack(side="left")
+                 anchor="w", font=("Segoe UI", 8)).pack(side="left", padx=(6, 0))
 
     def _text_lbl(self, row, entry, bg):
         txt = tk.Label(row, text=clip_view.flatten_line(entry["text"]), bg=bg,
@@ -364,11 +462,15 @@ class ClipPanel:
                        font=("Segoe UI", 10), cursor="hand2")
         chk.pack(side="left", padx=(2, 0))
         chk.bind("<Button-1>", lambda e, i=index, t=text: self._on_check(i, t, e))
+        self._add_hover(chk, TEAL)
         star = tk.Label(row, text="☆", bg=bg, fg=STAR_OFF, width=2,
                         font=("Segoe UI", 10), cursor="hand2")
         star.pack(side="left")
         star.bind("<Button-1>", lambda e, t=text: self._favorite(t))
-        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._add_hover(star, STAR_ON)
+        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t),
+                       hover_fg=DEL_HOVER)
+        self._icon_btn(row, "🖊", DIM, bg, lambda t=text: self._edit(t))
         self._time_lbl(row, entry, bg)
         self._len_lbl(row, entry, bg)
         self._text_lbl(row, entry, bg)
@@ -378,7 +480,9 @@ class ClipPanel:
         is_current = (text == self._current)
         row, bg = self._row_frame(self.fav_inner, text, is_current)
         self._icon_btn(row, "★", STAR_ON, bg, lambda t=text: self._unfavorite(t))
-        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t))
+        self._icon_btn(row, "✕", DIM, bg, lambda t=text: self._delete(t),
+                       hover_fg=DEL_HOVER)
+        self._icon_btn(row, "🖊", DIM, bg, lambda t=text: self._edit(t))
         self._time_lbl(row, entry, bg)
         self._len_lbl(row, entry, bg)
         self._text_lbl(row, entry, bg)
@@ -387,14 +491,54 @@ class ClipPanel:
         n = len(self._selected)
         if n:
             self.remove_btn.config(text="Remove selected (%d)" % n)
-            self.remove_btn.pack(side="left")
+            self.remove_btn.pack(side="left", pady=(6, 8))
         else:
             self.remove_btn.pack_forget()
 
+    def _render_select_all(self):
+        # Checked only when every shown ALL row is selected; teal whenever any
+        # is selected (so a partial selection reads as ☐ + teal).
+        if self.select_all_chk is None:
+            return
+        shown = len(self._all_texts)
+        sel = len(self._selected)
+        all_on = shown > 0 and sel == shown
+        self.select_all_chk.config(text="☑" if all_on else "☐",
+                                   fg=TEAL if sel else STAR_OFF)
+
+    def _toggle_select_all(self):
+        shown = set(self._all_texts)
+        if shown and shown <= self._selected:   # every shown row already checked
+            self._selected -= shown
+        else:
+            self._selected |= shown
+        self._anchor = None
+        self.refresh()
+
     def _render_capture(self):
         on = bool(self.app.cfg["clipboard"]["capture"])
-        self.cap_lbl.config(text=("⏻ capture on" if on else "⏻ capture off"),
+        self.cap_lbl.config(text=("● capture on" if on else "● capture off"),
                             fg=(TEAL if on else DIM))
+
+    def _pinned(self):
+        return bool(self.app.cfg["clipboard"]["pin"])
+
+    def _render_pin(self):
+        # Toggled-on shows a filled (selected) background behind the pin; the
+        # emoji glyph can't be recoloured by fg, so state reads from the bg.
+        self.pin_lbl.config(bg=(SEL_BG if self._pinned() else PANEL_BG))
+
+    def _toggle_pin(self):
+        self.app.cfg["clipboard"]["pin"] = not self._pinned()
+        self.app.save_cfg()
+        self._render_pin()
+
+    def _keep_open(self):
+        return bool(self.app.cfg["clipboard"]["keep_open"])
+
+    def _toggle_keep_open(self):
+        self.app.cfg["clipboard"]["keep_open"] = not self._keep_open()
+        self.app.save_cfg()
 
     # -- actions ----------------------------------------------------------
     def _current_clip(self):
@@ -411,7 +555,10 @@ class ClipPanel:
             self.app.absorb_seq()
         except tk.TclError:
             pass
-        self.close()
+        if self._pinned():
+            self.refresh()   # pinned: stay open; highlight tracks the copied item
+        else:
+            self.close()
 
     def _favorite(self, text):
         self.store.favorite(text)
@@ -425,6 +572,66 @@ class ClipPanel:
         self.store.delete(text)
         self._selected.discard(text)
         self.refresh()
+
+    def _apply_edit(self, old_text, new_text):
+        # Commit an edit to the store and keep the ALL selection in sync (a
+        # checked row that was renamed stays checked under its new text).
+        if self.store.edit(old_text, new_text) and old_text in self._selected:
+            self._selected.discard(old_text)
+            if new_text and new_text.strip():
+                self._selected.add(new_text)
+        self.refresh()
+
+    def _edit(self, text):
+        # Small editor popup: change a clip's text in place (works for ALL and
+        # FAVORITES). _suppress_close keeps the panel open while it's up.
+        self._suppress_close = True
+        top = tk.Toplevel(self.win)
+        top.title("Edit clip")
+        top.configure(bg=PANEL_BG)
+        top.attributes("-topmost", True)
+        try:
+            top.geometry("460x260+%d+%d" % (self.win.winfo_rootx() + 40,
+                                            self.win.winfo_rooty() + 60))
+        except tk.TclError:
+            top.geometry("460x260")
+
+        txt = tk.Text(top, wrap="word", bg=ENTRY_BG, fg=FG, insertbackground=FG,
+                      relief="flat", font=("Consolas", 10), undo=True,
+                      highlightthickness=1, highlightbackground=BORDER,
+                      highlightcolor=TEAL)
+        txt.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+        txt.insert("1.0", text)
+
+        bar = tk.Frame(top, bg=PANEL_BG)
+        bar.pack(fill="x", padx=10, pady=(0, 10))
+
+        def done():
+            self._suppress_close = False
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+
+        def save():
+            new = txt.get("1.0", "end-1c")
+            done()
+            self._apply_edit(text, new)
+
+        save_btn = tk.Label(bar, text="Save", bg=SEL_BG, fg=FG, padx=12, pady=4,
+                            font=("Segoe UI", 9, "bold"), cursor="hand2")
+        save_btn.pack(side="right")
+        save_btn.bind("<Button-1>", lambda e: save())
+        cancel_btn = tk.Label(bar, text="Cancel", bg=ENTRY_BG, fg=DIM, padx=12,
+                              pady=4, font=("Segoe UI", 9), cursor="hand2")
+        cancel_btn.pack(side="right", padx=(0, 8))
+        cancel_btn.bind("<Button-1>", lambda e: done())
+
+        top.protocol("WM_DELETE_WINDOW", done)
+        top.bind("<Escape>", lambda e: done())
+        txt.bind("<Control-Return>", lambda e: (save(), "break"))
+        top.lift()
+        top.after(10, txt.focus_set)
 
     def _on_check(self, index, text, event):
         if event.state & 0x0001 and self._anchor is not None:  # Shift
@@ -458,6 +665,11 @@ class ClipPanel:
         m = tk.Menu(self.win, tearoff=0)
         m.add_command(label="Clear history (All)", command=app._clear_history)
         m.add_separator()
+        m.add_command(
+            label=("✓ Keep open when unfocused" if self._keep_open()
+                   else "Keep open when unfocused"),
+            command=self._toggle_keep_open)
+        m.add_separator()
         enabled = startup.is_run_at_startup("Toybox_clipboard")
         m.add_command(label="✓ Run at login" if enabled else "Run at login",
                       command=app._toggle_startup)
@@ -478,7 +690,7 @@ class ClipPanel:
                 pass
 
     def _on_focus_out(self, event):
-        if self._suppress_close:
+        if self._suppress_close or self._keep_open():
             return
         try:
             if self.win.focus_get() is None:
@@ -698,7 +910,12 @@ def main():
     if os.environ.get("TOYBOX_SMOKE_SYNC"):        # exercise the sync path under smoke
         cfg["clipboard"]["sync"] = True
         cfg["clipboard"]["sync_passphrase"] = "smoke-pass"
-    store = clip_store.ClipStore(cfg["clipboard"]["max_items"], FAV_PATH)
+    store = clip_store.ClipStore(
+        cfg["clipboard"]["max_items"], FAV_PATH,
+        recent_path=RECENT_PATH,
+        persist_recent=cfg["clipboard"]["persist_recent"],
+    )
+    store.prune_recent(time.time())
 
     window.enable_dpi_awareness()
     root = tk.Tk()
