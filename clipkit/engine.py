@@ -1,7 +1,13 @@
 """Clipboard-sync decision logic, platform- and transport-agnostic. Decides what
 to publish and what to apply, and prevents echo loops via a single last-value
 hash. All I/O is injected as callbacks; the engine touches neither sockets nor
-clipboards, so it is fully unit-testable with fakes."""
+clipboards, so it is fully unit-testable with fakes.
+
+NOT thread-safe: `on_local_change` and `on_remote_frame` do an unlocked
+read-modify-write on `_last_value_hash`, so the caller must serialize them onto a
+single thread. The net layer does exactly this -- inbound frames are queued by the
+TCP thread and applied via `poll_incoming()` on the same (adapter main) thread
+that drives `local_change`, so the two entry points never run concurrently."""
 import hashlib
 
 

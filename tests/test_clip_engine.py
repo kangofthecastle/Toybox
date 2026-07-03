@@ -67,6 +67,15 @@ class TestEngine(unittest.TestCase):
         e.on_local_change("b")
         self.assertEqual(r.sent, [b"F:a", b"F:b"])
 
+    def test_returning_to_previous_value_is_resent(self):
+        # palindrome a->b->a: after the value moves on, going back to "a" is a
+        # genuine change again (the guard only remembers the LAST value).
+        r = Recorder(); e = r.engine()
+        e.on_local_change("a")
+        e.on_local_change("b")
+        e.on_local_change("a")
+        self.assertEqual(r.sent, [b"F:a", b"F:b", b"F:a"])
+
     def test_oversized_value_skipped(self):
         r = Recorder(); e = r.engine(max_bytes=8)
         e.on_local_change("x" * 9)
