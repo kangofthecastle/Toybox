@@ -47,7 +47,7 @@ GPU_COLOR = "#7ee787"  # green
 FONT = ("Consolas", 11)
 CLOCK_FONT = ("Consolas", 11, "bold")
 EXPAND_FONT = ("Consolas", 15, "bold")   # larger glyph for the width toggle
-MEDIA_FONT = ("Segoe UI Symbol", 12)
+MEDIA_FONT = ("Segoe UI Symbol", 14)
 MEDIA_PREV = "⏮"
 MEDIA_PLAY = "⏯"
 MEDIA_NEXT = "⏭"
@@ -182,15 +182,15 @@ class Hud:
 
         ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media controls: row 4 (above the clock)
         cx = self.width // 2
-        gap = 44
+        gap = 54                       # more breathing room between the transport glyphs
         self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
         self._media_play = c.create_text(cx, ymedia, text=MEDIA_PLAY, fill=FG, font=MEDIA_FONT)
         self._media_next = c.create_text(cx + gap, ymedia, text=MEDIA_NEXT, fill=FG, font=MEDIA_FONT)
-        half = ACTION_ZONE_W
+        half, vhalf = 20, 13           # roomier tap targets to match the larger glyphs
         self._media_hits = [
-            (cx - gap - half, cx - gap + half, ymedia - 11, ymedia + 11, "prev"),
-            (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
-            (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
+            (cx - gap - half, cx - gap + half, ymedia - vhalf, ymedia + vhalf, "prev"),
+            (cx - half,       cx + half,       ymedia - vhalf, ymedia + vhalf, "playpause"),
+            (cx + gap - half, cx + gap + half, ymedia - vhalf, ymedia + vhalf, "next"),
         ]
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
@@ -875,15 +875,15 @@ class Hud:
         cx = self.width // 2
         c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
         ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media row 4 (above clock)
-        gap = 44
+        gap = 54                       # more breathing room between the transport glyphs
         c.coords(self._media_prev, cx - gap, ymedia)
         c.coords(self._media_play, cx, ymedia)
         c.coords(self._media_next, cx + gap, ymedia)
-        half = ACTION_ZONE_W
+        half, vhalf = 20, 13           # roomier tap targets to match the larger glyphs
         self._media_hits = [
-            (cx - gap - half, cx - gap + half, ymedia - 11, ymedia + 11, "prev"),
-            (cx - half,       cx + half,       ymedia - 11, ymedia + 11, "playpause"),
-            (cx + gap - half, cx + gap + half, ymedia - 11, ymedia + 11, "next"),
+            (cx - gap - half, cx - gap + half, ymedia - vhalf, ymedia + vhalf, "prev"),
+            (cx - half,       cx + half,       ymedia - vhalf, ymedia + vhalf, "playpause"),
+            (cx + gap - half, cx + gap + half, ymedia - vhalf, ymedia + vhalf, "next"),
         ]
         y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand row 5 (under media)
         c.coords(self._expand_text, self.width - PAD, y3)
