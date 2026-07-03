@@ -139,8 +139,11 @@ class ClipSyncNode:
                 self._send_frame(addr, port, frame)
 
     def _send_frame(self, addr, port, frame):
+        # connect timeout stays under stop()'s 2s per-thread join budget, so a
+        # send to a dead peer that is in flight when stop() is called can't
+        # outlive the join (a LAN peer connects in milliseconds regardless).
         try:
-            with socket.create_connection((addr, port), timeout=3.0) as c:
+            with socket.create_connection((addr, port), timeout=1.5) as c:
                 c.sendall(struct.pack(">I", len(frame)) + frame)
         except OSError:
             pass
