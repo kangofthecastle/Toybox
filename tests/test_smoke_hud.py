@@ -47,6 +47,96 @@ class _HudTestBase(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudConfigWatch(_HudTestBase):
+    """The HUD watches config.json and live-reloads feeds when they change on
+    disk, but ignores writes that don't touch feeds/token (position saves etc.)."""
+    def _temp_cfg(self, feeds, token=""):
+        import tempfile, config
+        path = os.path.join(tempfile.mkdtemp(), "config.json")
+        cfg = config.defaults()
+        cfg["feeds"] = feeds
+        cfg["hud"]["github_token"] = token
+        config.save(path, cfg)
+        return path
+
+    def _rewrite(self, path, feeds=None, token=None, x=None):
+        import config, os as _os
+        cfg = config.load(path)
+        if feeds is not None:
+            cfg["feeds"] = feeds
+        if token is not None:
+            cfg["hud"]["github_token"] = token
+        if x is not None:
+            cfg["hud"]["x"] = x
+        config.save(path, cfg)
+        # Force a strictly-newer mtime so the watcher fires regardless of the
+        # filesystem's mtime resolution.
+        st = _os.stat(path)
+        _os.utime(path, (st.st_atime, st.st_mtime + 100))
+
+    def _arm(self, hud, path):
+        # Point the watcher at the temp file and baseline its mtime (the ctor
+        # baselined against the real config before isolate_cfg reassigned it).
+        hud.CFG_PATH = path
+        hud._cfg_mtime = hud._config_mtime()
+
+    def test_reloads_feeds_when_config_feeds_change(self):
+        feed_a = {"type": "rss", "url": "https://a", "title": "A"}
+        feed_b = {"type": "rss", "url": "https://b", "title": "B"}
+        path = self._temp_cfg([feed_a])
+        root, hud = self._make_hud([feed_a])
+        try:
+            self._arm(hud, path)
+            hud.feed_state[0] = "sentinel"          # reload must clear feed_state
+            self._rewrite(path, feeds=[feed_a, feed_b])
+            hud.tick()                               # watcher runs inside tick()
+            self.assertEqual(len(hud.cfg["feeds"]), 2)
+            self.assertEqual(hud.cfg["feeds"][1]["title"], "B")
+            self.assertEqual(hud.feed_state, {})     # cleared by the reload
+        finally:
+            hud.close(); root.destroy()
+
+    def test_no_reload_when_only_position_changed(self):
+        feed_a = {"type": "rss", "url": "https://a", "title": "A"}
+        path = self._temp_cfg([feed_a])
+        root, hud = self._make_hud([feed_a])
+        try:
+            self._arm(hud, path)
+            hud.feed_state[0] = "sentinel"
+            self._rewrite(path, x=999)               # feeds unchanged, only hud.x
+            hud._reload_feeds_if_config_changed()
+            self.assertEqual(hud.feed_state.get(0), "sentinel")   # NOT reloaded
+            self.assertEqual(len(hud.cfg["feeds"]), 1)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_reloads_when_token_changes(self):
+        feed_a = {"type": "rss", "url": "https://a", "title": "A"}
+        path = self._temp_cfg([feed_a], token="")
+        root, hud = self._make_hud([feed_a])
+        try:
+            self._arm(hud, path)
+            hud.feed_state[0] = "sentinel"
+            self._rewrite(path, token="ghp_new")
+            hud._reload_feeds_if_config_changed()
+            self.assertEqual(hud.cfg["hud"]["github_token"], "ghp_new")
+            self.assertEqual(hud.feed_state, {})
+        finally:
+            hud.close(); root.destroy()
+
+    def test_missing_config_is_safe(self):
+        root, hud = self._make_hud([{"type": "rss", "url": "https://a", "title": "A"}])
+        try:
+            hud.CFG_PATH = os.path.join(os.path.dirname(hud.CFG_PATH), "does_not_exist_xyz.json")
+            hud._cfg_mtime = 12345.0
+            hud.feed_state[0] = "sentinel"
+            hud._reload_feeds_if_config_changed()    # must not raise, must not reload
+            self.assertEqual(hud.feed_state.get(0), "sentinel")
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestHudFeedRendering(_HudTestBase):
     def test_feeds_grow_window_past_metrics_height(self):
         import hud as hudmod
@@ -284,6 +374,120 @@ class TestFeedSettings(_HudTestBase):
             self.assertEqual(added["query"], "is:open is:pr author:@me")
             self.assertEqual(added["items"], 5)
             self.assertTrue(hud.manager.feeds[-1]["valid"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_stocks_type_in_add_dropdown(self):
+        import feedkit.settings as settings
+        self.assertIn("stocks", settings._TYPES)
+
+    def test_stocks_render_fields_has_symbols_range_tab(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("stocks")
+            hud.settings._render_fields()
+            self.assertIn("symbols", hud.settings._fields)
+            self.assertIsNotNone(hud.settings._range_var)
+            self.assertIsNotNone(hud.settings._tab_var)
+            self.assertNotIn("url", hud.settings._fields)
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_stocks_on_add_builds_symbols_range_tab_feed(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("stocks")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("Markets")
+            hud.settings._fields["symbols"].set("spy, nvda aapl")
+            hud.settings._range_var.set("1d")
+            hud.settings._tab_var.set("markets")
+            hud.settings._on_add()
+            added = hud.cfg["feeds"][-1]
+            self.assertEqual(added["type"], "stocks")
+            self.assertEqual(added["symbols"], ["SPY", "NVDA", "AAPL"])
+            self.assertEqual(added["range"], "1d")
+            self.assertEqual(added["tab"], "markets")
+            self.assertTrue(hud.manager.feeds[-1]["valid"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_rss_on_add_writes_tab_notifications_does_not(self):
+        root, hud = self._make_hud([], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._type_var.set("rss")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("R")
+            hud.settings._fields["url"].set("https://x/y")
+            hud.settings._tab_var.set("tech")
+            hud.settings._on_add()
+            self.assertEqual(hud.cfg["feeds"][-1]["tab"], "tech")
+            hud.settings._type_var.set("notifications")
+            hud.settings._render_fields()
+            hud.settings._fields["title"].set("N")
+            hud.settings._on_add()
+            self.assertNotIn("tab", hud.cfg["feeds"][-1])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_remove_symbol_drops_ticker_and_persists(self):
+        feed = {"type": "stocks", "title": "Markets",
+                "symbols": ["SPY", "META", "NVDA"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            hud.settings._remove_symbol(0, "META")
+            self.assertEqual(hud.cfg["feeds"][0]["symbols"], ["SPY", "NVDA"])
+            self.assertTrue(hud.manager.feeds[0]["valid"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_add_symbol_appends_ticker_deduped_and_capped(self):
+        import tkinter as tk
+        feed = {"type": "stocks", "title": "Markets",
+                "symbols": ["SPY"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            var = tk.StringVar()
+            var.set("nvda, spy")                     # 'spy' already present -> deduped
+            hud.settings._add_symbol(0, var)
+            self.assertEqual(hud.cfg["feeds"][0]["symbols"], ["SPY", "NVDA"])
+            # empty/garbage entry is a no-op
+            blank = tk.StringVar(); blank.set("  !!  ")
+            hud.settings._add_symbol(0, blank)
+            self.assertEqual(hud.cfg["feeds"][0]["symbols"], ["SPY", "NVDA"])
+            hud.close()
+        finally:
+            root.destroy()
+
+    def test_stocks_feed_row_renders_symbol_chips_and_add(self):
+        feed = {"type": "stocks", "title": "Markets",
+                "symbols": ["SPY", "NVDA"], "range": "1mo", "tab": "markets"}
+        root, hud = self._make_hud([feed], isolate_cfg=True)
+        try:
+            hud._open_feed_settings()
+            texts = []
+
+            def walk(w):
+                for c in w.winfo_children():
+                    try:
+                        texts.append(c.cget("text"))
+                    except Exception:
+                        pass
+                    walk(c)
+            walk(hud.settings._list)
+            self.assertIn("SPY", texts)
+            self.assertIn("NVDA", texts)
+            self.assertIn("+", texts)                # add-ticker button present
             hud.close()
         finally:
             root.destroy()
@@ -1313,6 +1517,777 @@ class TestHudMarquee(_HudTestBase):
             for y0, y1, _u in hud._hit:
                 hud._on_motion(self._evt(60, (y0 + y1) // 2))
             self.assertIsNone(hud._marquee)                     # short line never scrolls
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudDiskRow(_HudTestBase):
+    def test_disk_row_renders_and_sits_between_gpu_and_media(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.disk = [("C:", 312 * 1024**3, 500 * 1024**3)]
+            hud._draw()
+            self.assertIn("C 312G", hud.canvas.itemcget(hud._disk_text, "text"))
+            gpu_y = hud.canvas.coords(hud._gpu_text)[1]
+            disk_y = hud.canvas.coords(hud._disk_text)[1]
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            clock_y = hud.canvas.coords(hud._clock_text)[1]
+            self.assertLess(gpu_y, disk_y)      # disk below GPU
+            self.assertLess(disk_y, media_y)    # disk above media
+            self.assertLess(media_y, clock_y)   # media still above clock
+        finally:
+            hud.close(); root.destroy()
+
+    def test_empty_disk_renders_blank_without_crash(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.disk = []
+            hud._draw()
+            self.assertEqual(hud.canvas.itemcget(hud._disk_text, "text"), "")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_disk_row_survives_width_toggle(self):
+        root, hud = self._make_hud([])
+        try:
+            hud.disk = [("C:", 312 * 1024**3, 500 * 1024**3)]
+            hud._toggle_width(); root.update_idletasks()
+            gpu_y = hud.canvas.coords(hud._gpu_text)[1]
+            disk_y = hud.canvas.coords(hud._disk_text)[1]
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            self.assertLess(gpu_y, disk_y)      # ordering preserved when wide
+            self.assertLess(disk_y, media_y)
+            self.assertIn("C 312G", hud.canvas.itemcget(hud._disk_text, "text"))
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNowPlaying(_HudTestBase):
+    def _sample(self, title="Song", artist="Artist", status="playing",
+                position_s=30.0, duration_s=120.0):
+        import time
+        import winkit.nowplaying as nowplaying
+        return nowplaying.NowPlaying(title, artist, status, position_s,
+                                     duration_s, time.monotonic())
+
+    def test_np_items_exist_and_blank_initially(self):
+        root, hud = self._make_hud([])
+        try:
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "text"), "")
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._np_bar)
+            self.assertEqual(x0, x1)                       # zero width => blank
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_renders_title_and_bar_when_playing(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=60.0, duration_s=120.0)
+            hud._draw_nowplaying()
+            text = hud.canvas.itemcget(hud._np_title, "text")
+            self.assertIn("Song", text)
+            self.assertIn("Artist", text)
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._np_bar)
+            self.assertGreater(x1 - x0, 0)                 # filled to ~half
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar, "fill"), hudmod.ACCENT)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_blank_when_stopped(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(status="stopped")
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "text"), "")
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._np_bar)
+            self.assertEqual(x0, x1)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_bar_hidden_when_source_has_no_timeline(self):
+        # Sources like foobar2000 publish no timeline (duration 0). An always-
+        # empty progress bar looks broken, so hide it -- but still show the track.
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=0.0, duration_s=0.0)
+            hud._draw_nowplaying()
+            self.assertIn("Song", hud.canvas.itemcget(hud._np_title, "text"))
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar_bg, "state"), "hidden")
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar, "state"), "hidden")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_bar_shown_when_source_has_timeline(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=60.0, duration_s=120.0)
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar_bg, "state"), "normal")
+            self.assertEqual(hud.canvas.itemcget(hud._np_bar, "state"), "normal")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_time_labels_show_elapsed_and_total(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(status="paused", position_s=60.0,
+                                              duration_s=120.0)
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_elapsed, "text"), "1:00")
+            self.assertEqual(hud.canvas.itemcget(hud._np_total, "text"), "2:00")
+            self.assertEqual(hud.canvas.itemcget(hud._np_elapsed, "state"), "normal")
+            self.assertEqual(hud.canvas.itemcget(hud._np_total, "state"), "normal")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_time_labels_hidden_when_no_timeline(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(position_s=0.0, duration_s=0.0)
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.itemcget(hud._np_elapsed, "state"), "hidden")
+            self.assertEqual(hud.canvas.itemcget(hud._np_total, "state"), "hidden")
+            self.assertFalse(hud._np_seekable)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_layout_reserved_and_stable_across_playback(self):
+        root, hud = self._make_hud([])
+        try:
+            clock_y = hud.canvas.coords(hud._clock_text)[1]
+            media_y = hud.canvas.coords(hud._media_play)[1]
+            np_y = hud.canvas.coords(hud._np_title)[1]
+            self.assertLess(media_y, np_y)                 # now-playing below media
+            self.assertLess(np_y, clock_y)                 # ...and above the clock
+            with hud._np_lock:
+                hud._np_latest = self._sample()
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.coords(hud._clock_text)[1], clock_y)  # no jump
+            with hud._np_lock:
+                hud._np_latest = None
+            hud._draw_nowplaying()
+            self.assertEqual(hud.canvas.coords(hud._clock_text)[1], clock_y)  # still no jump
+        finally:
+            hud.close(); root.destroy()
+
+    def test_np_recenters_when_widened(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._toggle_width(); root.update_idletasks()
+            self.assertEqual(hud.canvas.coords(hud._np_title)[0], hudmod.WIDTH_WIDE // 2)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_feeds_start_below_nowplaying_band(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Global"))  # tab bar drew (feeds below np)
+            self.assertLess(hud.canvas.coords(hud._np_title)[1],
+                            hud.canvas.coords(hud._clock_text)[1])
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudNowPlayingSeek(_HudTestBase):
+    def _sample(self, title="Song", artist="Artist", status="playing",
+                position_s=0.0, duration_s=120.0):
+        import time
+        import winkit.nowplaying as nowplaying
+        return nowplaying.NowPlaying(title, artist, status, position_s,
+                                     duration_s, time.monotonic())
+
+    def _armed_hud(self, root_hud, position_s=0.0, duration_s=120.0):
+        hud = root_hud
+        with hud._np_lock:
+            hud._np_latest = self._sample(status="paused", position_s=position_s,
+                                          duration_s=duration_s)
+        hud._draw_nowplaying()
+
+    def test_click_on_bar_seeks_and_optimistically_updates(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud)                     # paused, 0/120, timeline present
+            b_left, b_right = hud._np_bar_span
+            mid_x = (b_left + b_right) // 2
+            self.assertTrue(hud._np_seek_at(mid_x, hud._np_row_y))
+            self.assertEqual(len(calls), 1)
+            self.assertAlmostEqual(calls[0], 60.0, delta=1.0)   # midpoint of 120s
+            with hud._np_lock:
+                self.assertAlmostEqual(hud._np_latest.position_s, 60.0, delta=1.0)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_no_seek_without_timeline(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud, duration_s=0.0)     # no timeline -> not seekable
+            b_left, b_right = hud._np_bar_span
+            self.assertFalse(hud._np_seek_at((b_left + b_right) // 2, hud._np_row_y))
+            self.assertEqual(calls, [])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_click_off_the_bar_row_ignored(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud)
+            b_left, b_right = hud._np_bar_span
+            self.assertFalse(hud._np_seek_at((b_left + b_right) // 2,
+                                             hud._np_row_y + 40))   # far below the bar
+            self.assertEqual(calls, [])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_on_release_routes_bar_click_to_seek(self):
+        root, hud = self._make_hud([])
+        try:
+            calls = []
+            hud._dispatch_seek = lambda t: calls.append(t)
+            self._armed_hud(hud)
+            b_left, b_right = hud._np_bar_span
+            ev = type("E", (), {"x": (b_left + b_right) // 2, "y": hud._np_row_y})()
+            hud._moved = False
+            hud._on_release(ev)
+            self.assertEqual(len(calls), 1)          # plain click on bar -> seek dispatched
+        finally:
+            hud.close(); root.destroy()
+
+
+class TestHudNowPlayingMarquee(_HudTestBase):
+    LONG = "A tremendously long now-playing track title that will never fit"
+    ARTIST = "An Equally Long Artist Name Goes Right Here"
+
+    def _sample(self, title, artist=ARTIST, status="playing",
+                position_s=30.0, duration_s=120.0):
+        import time
+        import winkit.nowplaying as nowplaying
+        return nowplaying.NowPlaying(title, artist, status, position_s,
+                                     duration_s, time.monotonic())
+
+    def test_short_title_is_static_and_centered(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample("Hi", artist="X")
+            hud._draw_nowplaying()
+            self.assertIsNone(hud._np_scroll)                       # fits => no scrolling
+            self.assertEqual(hud.canvas.coords(hud._np_title)[0], hudmod.WIDTH // 2)
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "anchor"), "center")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_long_title_shows_full_text_and_scrolls_left(self):
+        import winkit.nowplaying as nowplaying
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            self.assertIsNotNone(hud._np_scroll)                    # overflow => scroll
+            self.assertGreater(hud._np_scroll["max"], 0)
+            shown = hud.canvas.itemcget(hud._np_title, "text")
+            self.assertEqual(shown, nowplaying.format_track(self.LONG, self.ARTIST))
+            self.assertNotIn("…", shown)                            # full text, not ellipsized
+            x_before = hud.canvas.coords(hud._np_title)[0]
+            for _ in range(6):
+                hud._np_marquee_step()
+            x_after = hud.canvas.coords(hud._np_title)[0]
+            self.assertLess(x_after, x_before)                      # scrolled left by pixels
+        finally:
+            hud.close(); root.destroy()
+
+    def test_long_title_wraps_to_start_not_bounce(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            m = hud._np_scroll
+            offsets = []
+            for _ in range(m["max"] // 2 + 60):
+                hud._np_marquee_step()
+                offsets.append(hud._np_scroll["offset"])
+            self.assertIn(m["max"], offsets)                        # scrolled to the end
+            i = offsets.index(m["max"])
+            j = i
+            while j < len(offsets) and offsets[j] == m["max"]:
+                j += 1                                              # skip the end pause
+            self.assertLess(j, len(offsets), "expected motion after the end pause")
+            self.assertEqual(offsets[j], 0)                         # wraps to start, not bounce
+        finally:
+            hud.close(); root.destroy()
+
+    def test_switch_long_to_short_returns_to_static(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            self.assertIsNotNone(hud._np_scroll)
+            with hud._np_lock:
+                hud._np_latest = self._sample("Hi", artist="X")
+            hud._draw_nowplaying()
+            self.assertIsNone(hud._np_scroll)                       # back to static
+            self.assertEqual(hud.canvas.coords(hud._np_title)[0], hudmod.WIDTH // 2)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_stopped_clears_scroll_state(self):
+        root, hud = self._make_hud([])
+        try:
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG)
+            hud._draw_nowplaying()
+            self.assertIsNotNone(hud._np_scroll)
+            with hud._np_lock:
+                hud._np_latest = self._sample(self.LONG, status="stopped")
+            hud._draw_nowplaying()
+            self.assertIsNone(hud._np_scroll)                       # stopped => no ticker
+            self.assertEqual(hud.canvas.itemcget(hud._np_title, "text"), "")
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudWeather(_HudTestBase):
+    FEED = {"type": "weather", "title": "Weather", "city": "Boston",
+            "units": "fahrenheit", "range": "today", "tab": "global"}
+
+    def _w(self, current=72.0, hi=78.0, lo=61.0, series=(70.0, 72.0, 74.0), unit="°F"):
+        from feedkit.model import Weather
+        return Weather(current, hi, lo, list(series), unit)
+
+    def test_tile_renders_temps_chart_and_toggle(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud.feed_state[0] = manager.FeedResult("ok", [self._w()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Weather"))          # title
+            self.assertTrue(hud._feed_has_text("H 78°"))       # hi/lo line
+            self.assertTrue(hud._feed_has_text("Today"))            # toggle labels
+            self.assertTrue(hud._feed_has_text("7D"))
+            self.assertTrue(any(hud.canvas.type(i) == "line" for i in hud._feed_items))  # sparkline
+        finally:
+            hud.close(); root.destroy()
+
+    def test_rich_tile_shows_glyph_condition_and_detail(self):
+        import feedkit.manager as manager
+        from feedkit.model import Weather
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            w = Weather(54.0, 66.0, 48.0, [50.0, 52.0], "°F",
+                        code=0, feels=51.0, humidity=72, wind=9.0, precip=10)
+            hud.feed_state[0] = manager.FeedResult("ok", [w], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Clear"))      # condition word
+            self.assertTrue(hud._feed_has_text("☀"))           # condition glyph
+            self.assertTrue(hud._feed_has_text("Feels 51°"))   # feels-like
+            self.assertTrue(hud._feed_has_text("Hum 72%"))     # detail line
+            self.assertTrue(hud._feed_has_text("Wind 9mph"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_weather_shown_regardless_of_active_tab(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "tech"                 # NOT the feed's old 'global' tab
+            hud.feed_state[0] = manager.FeedResult("ok", [self._w()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Weather"))    # still shown
+            self.assertTrue(hud._feed_has_text("H 78°"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_range_toggle_click_calls_set_weather_range(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            calls = []
+            hud.manager.set_weather_range = lambda idx, code: calls.append((idx, code))
+            hud.feed_state[0] = manager.FeedResult("ok", [self._w()], None, None)
+            hud._draw_feeds(); root.update_idletasks()
+            hit = None
+            for (y0, y1, x0, x1, a) in hud._action_hits:
+                if a == ("range", 0, "7d"):
+                    hit = (y0, y1, x0, x1); break
+            self.assertIsNotNone(hit, "no 7D range zone")
+            y0, y1, x0, x1 = hit
+            ev = type("E", (), {"x": (x0 + x1) // 2, "y": (y0 + y1) // 2})()
+            hud._moved = False; hud._on_release(ev)
+            self.assertEqual(calls, [(0, "7d")])
+        finally:
+            hud.close(); root.destroy()
+
+    def test_stale_tile_dims_line(self):
+        import feedkit.manager as manager
+        import hud as hudmod
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud.feed_state[0] = manager.FeedResult("stale", [self._w()], None, "offline")
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertEqual(_fill_of(hud, "H 78°"), hudmod.FEED_DIM)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_error_tile_shows_placeholder(self):
+        import feedkit.manager as manager
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud.feed_state[0] = manager.FeedResult("error", [], None, "city not found")
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("! city not found"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_loading_placeholder_when_no_data(self):
+        root, hud = self._make_hud([self.FEED])
+        try:
+            hud.active_tab = "global"
+            hud._draw_feeds(); root.update_idletasks()      # feed_state[0] is None
+            self.assertTrue(hud._feed_has_text("loading"))
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudScheduleTile(_HudTestBase):
+    def _sched(self, rows):
+        import schedkit.model as schedmodel
+        return schedmodel.parse_schedule({"S": rows})
+
+    def _text_y(self, hud, needle):
+        for iid in hud._feed_items:
+            try:
+                if needle in hud.canvas.itemcget(iid, "text"):
+                    return hud.canvas.coords(iid)[1]
+            except Exception:
+                pass
+        return None
+
+    def test_now_tile_renders_task(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 9, 30)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("Standup"))
+            self.assertTrue(hud._feed_has_text("▸"))     # the now glyph
+        finally:
+            hud.close(); root.destroy()
+
+    def test_next_tile_shows_time_and_arrow(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 8, 0)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertTrue(hud._feed_has_text("→"))     # arrow for a next slot
+            self.assertTrue(hud._feed_has_text("09:00"))
+            self.assertTrue(hud._feed_has_text("Standup"))
+        finally:
+            hud.close(); root.destroy()
+
+    def test_none_hides_tile_but_tabs_present(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 23, 0)
+            hud._draw_feeds(); root.update_idletasks()
+            self.assertFalse(hud._feed_has_text("Standup"))
+            self.assertTrue(hud._feed_has_text("Global"))     # tab bar unaffected
+        finally:
+            hud.close(); root.destroy()
+
+    def test_tile_is_above_tab_bar(self):
+        import datetime
+        root, hud = self._make_hud([])
+        try:
+            hud.schedule = self._sched([["Time", "Jun 29"], ["9:00-10:00", "Standup"]])
+            hud._schedule_now = lambda: datetime.datetime(2026, 6, 29, 9, 30)
+            hud._draw_feeds(); root.update_idletasks()
+            sched_y = self._text_y(hud, "Standup")
+            tab_y = self._text_y(hud, "Global")
+            self.assertIsNotNone(sched_y)
+            self.assertIsNotNone(tab_y)
+            self.assertLess(sched_y, tab_y)                   # pinned above the tabs
+        finally:
+            hud.close(); root.destroy()
+
+    def test_empty_schedule_draws_no_tile_no_crash(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._draw_feeds(); root.update_idletasks()         # default empty Schedule
+            self.assertTrue(hud._feed_has_text("Global"))
+        finally:
+            hud.close(); root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudEdgeFor(unittest.TestCase):
+    # screen 1920x1080, window 220x134, threshold 24 px.
+    SW, SH, W, H, T = 1920, 1080, 220, 134, 24
+
+    def test_left_edge(self):
+        import hud as hudmod
+        self.assertEqual(hudmod.edge_for(10, 300, self.W, self.H, self.SW, self.SH, self.T),
+                         "left")
+
+    def test_right_edge(self):
+        import hud as hudmod
+        # x+w = 1910 -> right gap 10; left gap 1690 -> right wins.
+        self.assertEqual(hudmod.edge_for(1690, 300, self.W, self.H, self.SW, self.SH, self.T),
+                         "right")
+
+    def test_top_edge(self):
+        import hud as hudmod
+        self.assertEqual(hudmod.edge_for(800, 10, self.W, self.H, self.SW, self.SH, self.T),
+                         "top")
+
+    def test_bottom_edge(self):
+        import hud as hudmod
+        # y+h = 1064 -> bottom gap 16; top gap 930 -> bottom wins.
+        self.assertEqual(hudmod.edge_for(800, 930, self.W, self.H, self.SW, self.SH, self.T),
+                         "bottom")
+
+    def test_center_is_none(self):
+        import hud as hudmod
+        self.assertIsNone(hudmod.edge_for(800, 500, self.W, self.H, self.SW, self.SH, self.T))
+
+    def test_corner_ties_prefer_left(self):
+        import hud as hudmod
+        # top-left corner: left gap == top gap == 10 -> left wins by fixed order.
+        self.assertEqual(hudmod.edge_for(10, 10, self.W, self.H, self.SW, self.SH, self.T),
+                         "left")
+
+    def test_partly_offscreen_left_still_docks(self):
+        import hud as hudmod
+        # already dragged past the edge (negative x) counts as within threshold.
+        self.assertEqual(hudmod.edge_for(-40, 300, self.W, self.H, self.SW, self.SH, self.T),
+                         "left")
+
+    def test_just_outside_threshold_is_none(self):
+        import hud as hudmod
+        # every gap is 25 (> 24): x=25, right gap 1920-245=1675, y=25, bottom gap 921.
+        self.assertIsNone(hudmod.edge_for(25, 25, self.W, self.H, self.SW, self.SH, self.T))
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudDockedGeometry(unittest.TestCase):
+    # screen 1920x1080, window 220x134 at x=50 y=300, lip 6 px.
+    SW, SH, W, H, X, Y, LIP = 1920, 1080, 220, 134, 50, 300, 6
+
+    def _geo(self, edge, revealed):
+        import hud as hudmod
+        return hudmod.docked_geometry(edge, self.X, self.Y, self.W, self.H,
+                                      self.SW, self.SH, revealed, self.LIP)
+
+    def test_left_hidden_leaves_lip(self):
+        # X = lip - w = 6 - 220 = -214; y preserved.
+        self.assertEqual(self._geo("left", False), "220x134+-214+300")
+
+    def test_left_revealed_pins_to_zero(self):
+        self.assertEqual(self._geo("left", True), "220x134+0+300")
+
+    def test_right_hidden_leaves_lip(self):
+        # X = sw - lip = 1914; y preserved.
+        self.assertEqual(self._geo("right", False), "220x134+1914+300")
+
+    def test_right_revealed_pins_to_edge(self):
+        # X = sw - w = 1700.
+        self.assertEqual(self._geo("right", True), "220x134+1700+300")
+
+    def test_top_hidden_leaves_lip(self):
+        # Y = lip - h = 6 - 134 = -128; x preserved.
+        self.assertEqual(self._geo("top", False), "220x134+50+-128")
+
+    def test_top_revealed_pins_to_zero(self):
+        self.assertEqual(self._geo("top", True), "220x134+50+0")
+
+    def test_bottom_hidden_leaves_lip(self):
+        # Y = sh - lip = 1074.
+        self.assertEqual(self._geo("bottom", False), "220x134+50+1074")
+
+    def test_bottom_revealed_pins_to_edge(self):
+        # Y = sh - h = 946.
+        self.assertEqual(self._geo("bottom", True), "220x134+50+946")
+
+    def test_unknown_edge_keeps_position(self):
+        # a None/garbage edge is a no-op: keep the window where it is.
+        self.assertEqual(self._geo(None, False), "220x134+50+300")
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudEdgePeekDock(_HudTestBase):
+    def test_drop_near_left_edge_docks_and_slides_off(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None                 # never touch config.json here
+            root.geometry("%dx%d+0+150" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            ev = type("E", (), {"x": 5, "y": 5, "x_root": 0, "y_root": 150})()
+            hud._moved = True                        # simulate a drag having occurred
+            hud._on_release(ev)                      # release near the left edge
+            self.assertEqual(hud._dock_edge, "left")     # docked
+            self.assertIsNotNone(hud._dock_after)        # slide-to-hidden started
+            # drive the chained animation to completion synchronously
+            for _ in range(hudmod.DOCK_ANIM_STEPS + 2):
+                hud._dock_step()
+            root.update_idletasks()
+            self.assertLess(root.winfo_x(), 0)           # window slid off the left edge
+        finally:
+            hud.close(); root.destroy()
+
+    def test_drop_in_center_undocks(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            sw = root.winfo_screenwidth(); sh = root.winfo_screenheight()
+            mx = max(0, min(sw // 2, sw - hudmod.WIDTH))
+            my = max(0, min(sh // 2, sh - hudmod.HEIGHT))
+            root.geometry("%dx%d+%d+%d" % (hudmod.WIDTH, hudmod.HEIGHT, mx, my))
+            root.update_idletasks()
+            hud._dock_edge = "left"                  # pretend it was docked before
+            ev = type("E", (), {"x": 5, "y": 5, "x_root": mx, "y_root": my})()
+            hud._moved = True
+            hud._on_release(ev)                      # released in the middle
+            self.assertIsNone(hud._dock_edge)        # no edge -> undocked
+        finally:
+            hud.close(); root.destroy()
+
+    def test_close_cancels_pending_dock_after(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            root.geometry("%dx%d+0+150" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            hud._dock_edge = "left"
+            hud._dock_animate(revealed=False)        # schedules an after()
+            self.assertIsNotNone(hud._dock_after)
+            hud.close()                              # must cancel it without raising
+            self.assertIsNone(hud._dock_after)
+        finally:
+            root.destroy()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudEdgePeekReveal(_HudTestBase):
+    def _drive(self, hud, n=8):
+        for _ in range(n):
+            hud._dock_step()
+
+    def test_enter_reveals_and_leave_hides_when_docked(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            root.geometry("%dx%d+0+150" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            hud._dock_edge = "left"
+            # start hidden (slid off the left edge)
+            hud._dock_animate(revealed=False); self._drive(hud); root.update_idletasks()
+            self.assertLess(root.winfo_x(), 0)
+            # hover the lip -> reveal fully on-screen
+            hud._on_dock_enter(type("E", (), {"x": 1, "y": 1})())
+            self._drive(hud); root.update_idletasks()
+            self.assertEqual(root.winfo_x(), 0)
+            # pointer leaves -> hide back to the lip
+            hud._on_dock_leave(type("E", (), {"x": -1, "y": -1})())
+            self._drive(hud); root.update_idletasks()
+            self.assertLess(root.winfo_x(), 0)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_enter_and_leave_are_noops_when_not_docked(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._save = lambda: None
+            root.geometry("%dx%d+400+400" % (hudmod.WIDTH, hudmod.HEIGHT))
+            root.update_idletasks()
+            self.assertIsNone(hud._dock_edge)
+            hud._on_dock_enter(type("E", (), {"x": 1, "y": 1})())   # must not raise
+            hud._on_dock_leave(type("E", (), {"x": 1, "y": 1})())   # must not raise
+            self.assertIsNone(hud._dock_target)                     # no animation started
+        finally:
+            hud.close(); root.destroy()
+
+    def test_enter_leave_bound_on_canvas_not_root(self):
+        # regression guard: dock hover bindings live on the canvas (like the other
+        # mouse bindings), never on root, so they can't double-fire.
+        root, hud = self._make_hud([])
+        try:
+            for seq in ("<Enter>", "<Leave>"):
+                self.assertEqual(hud.root.bind(seq), "", "%s must not be bound on root" % seq)
+                self.assertNotEqual(hud.canvas.bind(seq), "", "%s must be bound on canvas" % seq)
+        finally:
+            hud.close(); root.destroy()
+
+
+class TestHudMediaHover(_HudTestBase):
+    def _center(self, hud, want):
+        for x0, x1, y0, y1, key in hud._media_hits:
+            if key == want:
+                return (x0 + x1) // 2, (y0 + y1) // 2
+        raise AssertionError("no media hit zone for %r" % want)
+
+    def test_media_glyph_accents_on_hover_and_reverts(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            cx, cy = self._center(hud, "playpause")
+            hud._set_media_hover(hud._media_at(cx, cy))
+            self.assertEqual(hud.canvas.itemcget(hud._media_play, "fill"), hudmod.ACCENT)
+            self.assertEqual(hud.canvas.itemcget(hud._media_prev, "fill"), hudmod.FG)
+            self.assertEqual(hud.canvas.itemcget(hud._media_next, "fill"), hudmod.FG)
+            hud._set_media_hover(None)                       # pointer leaves the glyph
+            self.assertEqual(hud.canvas.itemcget(hud._media_play, "fill"), hudmod.FG)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_hover_moves_between_glyphs(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            px, py = self._center(hud, "prev")
+            hud._set_media_hover(hud._media_at(px, py))
+            self.assertEqual(hud.canvas.itemcget(hud._media_prev, "fill"), hudmod.ACCENT)
+            nx, ny = self._center(hud, "next")
+            hud._set_media_hover(hud._media_at(nx, ny))
+            self.assertEqual(hud.canvas.itemcget(hud._media_next, "fill"), hudmod.ACCENT)
+            self.assertEqual(hud.canvas.itemcget(hud._media_prev, "fill"), hudmod.FG)
         finally:
             hud.close(); root.destroy()
 

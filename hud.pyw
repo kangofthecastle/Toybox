@@ -8,6 +8,7 @@ import winkit.startup as startup
 startup.guard_streams()  # MUST be the first executable statement (pythonw-at-login safety)
 
 import collections
+import threading
 import time
 
 import tkinter as tk
@@ -16,11 +17,16 @@ import tkinter.messagebox as tkmsg
 import winkit.window as window
 import winkit.metrics as metrics
 import winkit.media as media
+import winkit.nowplaying as nowplaying
+import winkit.diskinfo as diskinfo
 import config
 import webbrowser
 import timeago
 import feedkit.manager as feedmanager
 import feedkit.model as feedmodel
+import schedkit.xlsx as schedxlsx
+import schedkit.model as schedmodel
+import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_PATH = os.path.join(HERE, "config.json")
@@ -28,7 +34,10 @@ LOG_PATH = os.path.join(HERE, "toybox.log")
 
 # Layout (logical px). Kept genuinely small per the lightweight requirement.
 WIDTH = 220
-HEIGHT = 134          # 5 header rows (CPU/RAM/GPU/media/clock) + margin
+NOWPLAYING_H = 32      # reserved band under the media row: title + bar + time labels
+NP_BAR_H = 3           # progress-bar thickness (px)
+NP_TIME_W = 34         # inset each side of the bar for the M:SS elapsed/total labels
+HEIGHT = 156 + NOWPLAYING_H   # 6 header rows + reserved now-playing band + margin
 WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
 ROW_H = 22
@@ -36,7 +45,14 @@ LABEL_X = PAD
 SPARK_W = 84            # fixed-width sparkline area
 SPARK_RIGHT = WIDTH - PAD
 SPARK_LEFT = SPARK_RIGHT - SPARK_W
+DISK_MAX_CHARS = 26    # cap for the packed disk-free header row (narrow width)
 HISTORY = 60           # ~60 samples in the deque
+
+# Edge-peek dock-to-edge (Feature 6). All session-only, like the width toggle.
+DOCK_THRESHOLD = 24    # px from a screen edge (on drop) that triggers docking
+DOCK_LIP = 6           # px of the window left peeking when docked and hidden
+DOCK_ANIM_MS = 30      # per-frame delay of the slide animation
+DOCK_ANIM_STEPS = 4    # frames per slide (reveal or hide)
 
 BG = "#15151a"         # dark translucent background
 FG = "#d8d8e0"         # light text
@@ -51,6 +67,10 @@ MEDIA_FONT = ("Segoe UI Symbol", 14)
 MEDIA_PREV = "⏮"
 MEDIA_PLAY = "⏯"
 MEDIA_NEXT = "⏭"
+NP_TITLE_FONT = ("Consolas", 9)
+NP_TIME_FONT = ("Consolas", 8)   # elapsed / total M:SS labels flanking the bar
+NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
+NP_POLL_S = 2.5        # background SMTC read interval (seconds)
 
 FEED_FONT = ("Consolas", 9)
 FEED_TITLE_FONT = ("Consolas", 9, "bold")
@@ -64,6 +84,8 @@ STATE_HEX = {"success": "#3fb950", "failure": "#f85149",
 STOCK_UP = "#3fb950"       # green: day change >= 0
 STOCK_DOWN = "#f85149"     # red: day change < 0
 STOCK_CHART_H = 20         # px per drawn price-chart row
+WEATHER_GLYPH_FONT = ("Segoe UI Symbol", 14)   # condition glyph (☀ ☁ ☔ ❄ ⛈)
+WEATHER_HEAD_H = 20        # px for the glyph + current-temp lead row
 ACCENT = "#33d6ff"         # cyan: active-tab + active range-toggle indicator
 HOVER_BG = "#24242e"       # subtle highlight band behind the hovered row/tab
 URGENCY_HEX = {"high": STATE_HEX["pending"], "normal": FEED_FG, "low": FEED_DIM}
@@ -100,6 +122,43 @@ def _stock_points(series, x_left, x_right, top, bottom):
     return pts
 
 
+def edge_for(x, y, w, h, sw, sh, threshold):
+    """Which screen edge a window at (x, y) sized (w, h) on an sw x sh screen is
+    within `threshold` px of, or None. Ties (a corner) resolve to the nearest,
+    scanning left, right, top, bottom so a perfect tie prefers the earlier edge.
+    A window dragged partly off-screen (negative gap) still counts as docked."""
+    gaps = {
+        "left": x,
+        "right": sw - (x + w),
+        "top": y,
+        "bottom": sh - (y + h),
+    }
+    best = None
+    for edge in ("left", "right", "top", "bottom"):
+        gap = gaps[edge]
+        if gap <= threshold and (best is None or gap < gaps[best]):
+            best = edge
+    return best
+
+
+def docked_geometry(edge, x, y, w, h, sw, sh, revealed, lip):
+    """Tk geometry string "WxH+X+Y" for a window docked at `edge`. When revealed
+    it pins flush to that edge; when hidden it slides off-screen leaving `lip` px
+    visible. The cross-axis coordinate is preserved. An unknown edge is a no-op
+    (keeps the current x, y). Negative offsets format as +-N, which Tk accepts
+    (same convention as the drag handler)."""
+    nx, ny = x, y
+    if edge == "left":
+        nx = 0 if revealed else lip - w
+    elif edge == "right":
+        nx = sw - w if revealed else sw - lip
+    elif edge == "top":
+        ny = 0 if revealed else lip - h
+    elif edge == "bottom":
+        ny = sh - h if revealed else sh - lip
+    return "%dx%d+%d+%d" % (w, h, nx, ny)
+
+
 def _repo_short(full):
     """Bare repo name (drop the owner/), capped so a long owner can't push the
     reason label off the right edge of the 220px tile."""
@@ -127,6 +186,8 @@ class Hud:
         self.gpu_sampler = metrics.GpuSampler()
         self.gpu_hist = collections.deque(maxlen=HISTORY)
         self.gpu = None
+        self.disk = []           # latest diskinfo.usage() list
+        self._disk_at = 0.0      # monotonic time of last disk sample (interval-gated)
         self._drag_dx = 0
         self._drag_dy = 0
         self._moved = False
@@ -147,7 +208,26 @@ class Hud:
         self.active_tab = feedmodel.coerce_default_tab(cfg["hud"].get("default_tab"))
         token = self._github_token()
         self.manager = feedmanager.FeedManager(cfg.get("feeds", []), token=token)
+        # Schedule tile state. self.schedule starts empty (tile hidden) and is
+        # replaced under the lock by the mtime-gated poller thread. Guarded by the
+        # smoke check so a smoke launch starts no thread.
+        self.schedule = schedmodel.Schedule([])
+        self._sched_lock = threading.Lock()
+        self._sched_path = self._schedule_path()
+        self._sched_mtime = None
+        self._sched_stop = threading.Event()
+        self._sched_thread = None
+        # config.json feed-reload watcher: baseline the mtime now, BEFORE the first
+        # tick() (called at the end of __init__), so tick never sees a spurious
+        # change on startup.
+        self._cfg_mtime = self._config_mtime()
+        if not _smoke_ms():
+            self._start_schedule_poller()
         self.width = WIDTH        # session-only; resets narrow each launch
+        self._dock_edge = None    # None|'left'|'right'|'top'|'bottom'; session-only
+        self._dock_after = None   # pending dock-slide after() id (cancelled on close)
+        self._dock_target = None  # (w, h, x, y) the slide animates toward, or None
+        self._dock_steps = 0      # frames left in the current slide
 
         self.canvas = tk.Canvas(
             root, width=self.width, height=HEIGHT, bg=BG,
@@ -158,6 +238,8 @@ class Hud:
         # Pixel-width measurer for line 1 (emoji glyphs are double-width, so
         # char-count truncation under-budgets and collides with the age).
         self._feed_font_measure = tkfont.Font(root=root, family=FEED_FONT[0], size=FEED_FONT[1])
+        self._weather_glyph_font = tkfont.Font(root=root, family=WEATHER_GLYPH_FONT[0],
+                                               size=WEATHER_GLYPH_FONT[1])
 
         # Persistent canvas items: created once, updated in place each tick
         # (no per-frame create/destroy churn -- matches the lightweight pattern).
@@ -165,10 +247,12 @@ class Hud:
         y1 = PAD + ROW_H // 2
         y2 = PAD + ROW_H + ROW_H // 2
         ygpu = PAD + 2 * ROW_H + ROW_H // 2
-        y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand: row 5 (under the media controls)
+        ydisk = PAD + 3 * ROW_H + ROW_H // 2     # disk row: row 4 (after GPU)
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, shifted below the now-playing band
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
+        self._disk_text = c.create_text(LABEL_X, ydisk, anchor="w", text="", fill=FG, font=FONT)
         self._clock_text = c.create_text(self.width // 2, y3, anchor="center", text="", fill=DIM, font=CLOCK_FONT)
         self._expand_text = c.create_text(self.width - PAD, y3, anchor="e",
                                           text=EXPAND_GLYPH, fill=FG, font=EXPAND_FONT)
@@ -180,7 +264,7 @@ class Hud:
         self._ram_band = (PAD + ROW_H + 1, PAD + 2 * ROW_H - 1)
         self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
-        ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media controls: row 4 (above the clock)
+        ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media controls: row 5 (above the clock)
         cx = self.width // 2
         gap = 54                       # more breathing room between the transport glyphs
         self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
@@ -192,6 +276,36 @@ class Hud:
             (cx - half,       cx + half,       ymedia - vhalf, ymedia + vhalf, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - vhalf, ymedia + vhalf, "next"),
         ]
+        self._media_hover = None   # which media glyph is currently hover-highlighted
+
+        # Now-playing band: reserved directly below the media row so the header
+        # never jumps when playback starts/stops. Two rows: the title, then the
+        # progress bar flanked by elapsed/total M:SS time labels.
+        np_top = ymedia + ROW_H // 2                 # bottom edge of the media row band
+        self._np_row_y = np_top + NOWPLAYING_H - 8   # baseline of the bar + time labels
+        self._np_bar_y = self._np_row_y - NP_BAR_H // 2
+        b_left, b_right = self._np_bar_bounds()
+        self._np_title = c.create_text(self.width // 2, np_top + 8, anchor="center",
+                                       text="", fill=DIM, font=NP_TITLE_FONT)
+        self._np_bar_bg = c.create_rectangle(b_left, self._np_bar_y, b_right,
+                                             self._np_bar_y + NP_BAR_H,
+                                             fill=NP_TRACK, outline="")
+        self._np_bar = c.create_rectangle(b_left, self._np_bar_y, b_left,
+                                          self._np_bar_y + NP_BAR_H,
+                                          fill=ACCENT, outline="")
+        self._np_elapsed = c.create_text(b_left - 5, self._np_row_y, anchor="e",
+                                         text="", fill=DIM, font=NP_TIME_FONT)
+        self._np_total = c.create_text(b_right + 5, self._np_row_y, anchor="w",
+                                       text="", fill=DIM, font=NP_TIME_FONT)
+        self._np_lock = threading.Lock()
+        self._np_latest = None                       # NowPlaying or None (poll thread writes)
+        self._np_stop = threading.Event()
+        self._np_thread = None
+        self._np_scroll = None            # now-playing title ticker state, or None (fits/blank)
+        self._np_marquee_after = None     # pending after() id for the ticker loop
+        self._np_seekable = False         # True only while a timeline is present (click-to-seek armed)
+        self._np_bar_span = (b_left, b_right)   # last drawn bar span, for seek hit-testing
+        self._np_duration = 0.0           # last drawn track duration (s), for seek target math
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
@@ -205,6 +319,8 @@ class Hud:
             w.bind("<Button-3>", self._on_menu)
             w.bind("<Motion>", self._on_motion)
             w.bind("<Leave>", self._on_leave)
+            w.bind("<Enter>", self._on_dock_enter, add="+")
+            w.bind("<Leave>", self._on_dock_leave, add="+")
 
         self.menu = tk.Menu(root, tearoff=0)
         for preset in ALPHA_PRESETS:
@@ -224,6 +340,8 @@ class Hud:
         self._draw_feeds()
         if not _smoke_ms():
             self.manager.start()   # no worker / no network under smoke launches
+            self._start_nowplaying()
+        self._tick_after = None
         self.tick()
         self._drain_after = self.root.after(250, self._drain_feeds)
 
@@ -250,6 +368,8 @@ class Hud:
             if key is not None:
                 self._do_media(key)
                 return
+            if self._np_seek_at(event.x, event.y):        # click on the progress bar -> seek
+                return
             action = self._action_at(event.x, event.y)   # tab/refresh/range/dismiss zones
             if action is not None:
                 self._dispatch_action(action)
@@ -265,6 +385,7 @@ class Hud:
         self.cfg["hud"]["x"] = self.root.winfo_x()
         self.cfg["hud"]["y"] = self.root.winfo_y()
         self._save()
+        self._maybe_dock()
 
     def _dispatch_action(self, action):
         kind = action[0]
@@ -290,6 +411,20 @@ class Hud:
             if x0 <= x <= x1 and y0 <= y <= y1:
                 return key
         return None
+
+    def _set_media_hover(self, key):
+        """Brighten the hovered media glyph with the accent colour; revert the
+        others to FG. Cheap on <Motion> -- a no-op unless the glyph changes."""
+        if key == self._media_hover:
+            return
+        self._media_hover = key
+        for k, item in (("prev", self._media_prev),
+                        ("playpause", self._media_play),
+                        ("next", self._media_next)):
+            try:
+                self.canvas.itemconfig(item, fill=(ACCENT if k == key else FG))
+            except tk.TclError:
+                pass
 
     def _do_media(self, key):
         """Dispatch a media-control click to winkit.media (looked up as a module
@@ -361,8 +496,14 @@ class Hud:
         self.gpu = self.gpu_sampler.sample()
         if self.gpu is not None:
             self.gpu_hist.append(self.gpu)
+        now = time.monotonic()
+        if now - self._disk_at >= 15:            # disk-free changes slowly; refresh ~15s
+            self.disk = diskinfo.usage()
+            self._disk_at = now
+        self._reload_feeds_if_config_changed()   # live-pick-up of edited feeds/token
         self._draw()
-        self.root.after(1000, self.tick)
+        self._draw_nowplaying()
+        self._tick_after = self.root.after(1000, self.tick)
 
     def _draw(self):
         c = self.canvas
@@ -372,6 +513,7 @@ class Hud:
             c.itemconfig(self._gpu_text, text="GPU  --%", fill=DIM)
         else:
             c.itemconfig(self._gpu_text, text=f"GPU {self.gpu:3.0f}%", fill=FG)
+        c.itemconfig(self._disk_text, text=diskinfo.format_disk_row(self.disk, DISK_MAX_CHARS))
         c.itemconfig(self._clock_text, text=time.strftime("%H:%M:%S"))
         self._update_spark(self._cpu_line, self.cpu_hist, self._cpu_band)
         self._update_spark(self._ram_line, self.ram_hist, self._ram_band)
@@ -395,6 +537,143 @@ class Hud:
         self.canvas.coords(line_id, *pts)
         self.canvas.itemconfig(line_id, state="normal")
 
+    # --- now playing ------------------------------------------------------
+    def _start_nowplaying(self):
+        """Spawn the daemon that polls SMTC every NP_POLL_S and stores the latest
+        sample under a lock. It waits one interval before the first read so a
+        just-constructed HUD (and the tests) see a stable None until then."""
+        def _loop():
+            while not self._np_stop.wait(NP_POLL_S):
+                try:
+                    s = nowplaying.read()
+                except Exception:
+                    s = None
+                with self._np_lock:
+                    self._np_latest = s
+        self._np_thread = threading.Thread(target=_loop, name="nowplaying",
+                                            daemon=True)
+        self._np_thread.start()
+
+    def _np_bar_bounds(self):
+        """Horizontal span (x_left, x_right) of the progress bar, inset on both
+        sides to leave room for the elapsed/total M:SS time labels."""
+        return PAD + NP_TIME_W, self.width - PAD - NP_TIME_W
+
+    def _draw_nowplaying(self):
+        """Update the title line, progress bar and elapsed/total time labels from
+        the latest SMTC sample. The bar advances with wall-clock so it moves
+        smoothly between reads. A title that fits renders static and centered; a
+        title that overflows auto-scrolls (music-player ticker: scroll left to
+        reveal the end, then jump back to the start -- never bouncing). Blank when
+        nothing is playing; bar + times hidden when the source has no timeline.
+        Never raises."""
+        c = self.canvas
+        with self._np_lock:
+            s = self._np_latest
+        t_left, t_right = PAD, self.width - PAD           # title budget: full width
+        b_left, b_right = self._np_bar_bounds()           # bar span: inset for time labels
+        y0, y1 = self._np_bar_y, self._np_bar_y + NP_BAR_H
+        try:
+            # np items are persistent (created once, never deleted), so coords()
+            # always returns a populated list here -- [1] is safe.
+            title_y = self.canvas.coords(self._np_title)[1]
+            if s is None or s.status == "stopped":
+                self._np_scroll = None                       # nothing playing -> no ticker
+                self._np_seekable = False
+                c.itemconfig(self._np_title, text="", anchor="center")
+                c.coords(self._np_title, self.width // 2, title_y)
+                c.coords(self._np_bar, b_left, y0, b_left, y1)   # zero width => blank
+                for it in (self._np_bar_bg, self._np_elapsed, self._np_total):
+                    c.itemconfig(it, state="hidden")
+                return
+            text = nowplaying.format_track(s.title, s.artist)
+            pos = nowplaying.advance(s.position_s, time.monotonic() - s.sampled_at,
+                                     s.status)
+            frac = nowplaying.progress_fraction(pos, s.duration_s)
+            if s.duration_s > 0:                             # timeline present -> bar + times + seek
+                self._np_seekable = True
+                self._np_bar_span = (b_left, b_right)
+                self._np_duration = s.duration_s
+                for it in (self._np_bar_bg, self._np_bar, self._np_elapsed, self._np_total):
+                    c.itemconfig(it, state="normal")
+                c.coords(self._np_bar, b_left, y0, b_left + int((b_right - b_left) * frac), y1)
+                c.itemconfig(self._np_elapsed, text=nowplaying.format_clock(pos))
+                c.itemconfig(self._np_total, text=nowplaying.format_clock(s.duration_s))
+            else:                                            # no timeline (e.g. foobar2000) -> hide, no seek
+                self._np_seekable = False
+                for it in (self._np_bar_bg, self._np_bar, self._np_elapsed, self._np_total):
+                    c.itemconfig(it, state="hidden")
+            c.itemconfig(self._np_title, text=text)          # FULL text; the widget edge clips overflow
+            max_off = nowplaying.marquee_scroll_max(
+                self._feed_font_measure.measure(text), t_right - t_left)
+            if max_off <= 0:
+                self._np_scroll = None                       # fits => static, centered
+                c.itemconfig(self._np_title, anchor="center")
+                c.coords(self._np_title, self.width // 2, title_y)
+            else:
+                if self._np_scroll is None or self._np_scroll.get("text") != text:
+                    self._np_scroll = {"text": text, "offset": 0, "pause": 0}
+                self._np_scroll["max"] = max_off
+                self._np_scroll["base_x"] = t_left
+                c.itemconfig(self._np_title, anchor="w")
+                c.coords(self._np_title, t_left - self._np_scroll["offset"], title_y)
+                self._np_marquee_ensure()                    # kick the ticker loop if idle
+        except tk.TclError:
+            pass
+
+    def _np_marquee_ensure(self):
+        """Start the now-playing ticker loop if it is not already scheduled. The
+        loop self-stops when _np_scroll goes None (title fits or nothing plays)."""
+        if self._np_marquee_after is None:
+            self._np_marquee_after = self.root.after(33, self._np_marquee_step)
+
+    def _np_marquee_step(self):
+        """Advance the persistent now-playing title one pixel-motion tick using the
+        SAME wrap math as the feed marquee (nowplaying.marquee_step). Runs only
+        while a long title overflows; stops itself otherwise. Never raises."""
+        m = self._np_scroll
+        if m is None:
+            self._np_marquee_after = None                    # nothing to scroll -> stop the loop
+            return
+        try:
+            m["offset"], m["pause"] = nowplaying.marquee_step(
+                m["offset"], m["max"], m["pause"])
+            # _np_title is persistent (never deleted), so coords() is always
+            # populated here -- [1] is safe.
+            y = self.canvas.coords(self._np_title)[1]
+            self.canvas.coords(self._np_title, m["base_x"] - m["offset"], y)
+        except tk.TclError:
+            self._np_marquee_after = None
+            return
+        self._np_marquee_after = self.root.after(33, self._np_marquee_step)
+
+    def _np_seek_at(self, x, y):
+        """If (x, y) falls on the now-playing progress bar and a seekable timeline
+        is present, seek there -- optimistically jumping the local sample so the
+        bar moves at once -- and return True; otherwise return False. The real
+        SMTC seek runs off the UI thread (it can block ~1s)."""
+        if not self._np_seekable:
+            return False
+        b_left, b_right = self._np_bar_span
+        if not (b_left - 4 <= x <= b_right + 4 and
+                self._np_row_y - 8 <= y <= self._np_row_y + 8):
+            return False
+        target = nowplaying.seek_target_seconds(x, b_left, b_right, self._np_duration)
+        self._dispatch_seek(target)
+        with self._np_lock:                              # optimistic: reflect the seek now
+            s = self._np_latest
+            if s is not None:
+                self._np_latest = s._replace(position_s=target,
+                                             sampled_at=time.monotonic())
+        self._draw_nowplaying()
+        return True
+
+    def _dispatch_seek(self, position_s):
+        """Issue the SMTC seek off the UI thread (a test seam; the WinRT call can
+        block up to ~1s while it drives the async to completion)."""
+        threading.Thread(target=nowplaying.seek, args=(position_s,),
+                         name="np-seek", daemon=True).start()
+
     # --- feeds ------------------------------------------------------------
     def _github_token(self):
         return os.environ.get("TOYBOX_GITHUB_TOKEN") or self.cfg["hud"].get("github_token", "")
@@ -408,6 +687,12 @@ class Hud:
         """Indices of pinned GitHub-family feeds (github/notifications/search)."""
         return [i for i, f in enumerate(self.manager.feeds)
                 if feedmodel.is_pinned_type(f.get("type"))]
+
+    def _weather_indices(self):
+        """Indices of weather feeds -- always shown in their own section above the
+        tabs, never tab-scoped."""
+        return [i for i, f in enumerate(self.manager.feeds)
+                if f.get("type") == "weather"]
 
     def _drain_feeds(self):
         self._drain_after = None
@@ -435,6 +720,14 @@ class Hud:
                        "state": result.state if result else "loading",
                        "error": result.error if result else None}
             return ("stocks", payload)
+        if feed.get("valid") and feed["type"] == "weather":
+            result = self.feed_state.get(idx)
+            payload = {"title": feed.get("title") or feed.get("city") or "Weather",
+                       "range": feed["range"],
+                       "weather": (result.items[0] if result and result.items else None),
+                       "state": result.state if result else "loading",
+                       "error": result.error if result else None}
+            return ("weather", payload)
         result = self.feed_state.get(idx)
         if result is None:
             return (title, None, FEED_FG, [("loading…", None, True)], None)
@@ -499,7 +792,9 @@ class Hud:
 
     def _draw_tile(self, idx, feed, y):
         tile = self._tile_for(idx, feed)
-        if len(tile) == 2:                       # ("stocks", payload)
+        if len(tile) == 2:                       # ("stocks"/"weather", payload)
+            if tile[0] == "weather":
+                return self._draw_weather_tile(idx, tile[1], y)
             return self._draw_stock_tile(idx, tile[1], y)
         title, title_url, color, lines, header_action = tile
         c = self.canvas
@@ -620,16 +915,8 @@ class Hud:
         if m is None:
             return
         try:
-            if m["pause"] > 0:
-                m["pause"] -= 1
-            elif m["offset"] >= m["max"]:
-                m["offset"] = 0            # reached the end -> jump back to the start, then loop
-                m["pause"] = 10            # brief pause at the start before scrolling again
-            else:
-                m["offset"] += 2
-                if m["offset"] >= m["max"]:
-                    m["offset"] = m["max"]
-                    m["pause"] = 10        # brief pause showing the end, then wrap next tick
+            m["offset"], m["pause"] = nowplaying.marquee_step(
+                m["offset"], m["max"], m["pause"])   # shared wrap math (0->max->0, no bounce)
             y = self.canvas.coords(m["item"])[1]
             self.canvas.coords(m["item"], m["base_x"] - m["offset"], y)
         except tk.TclError:
@@ -658,6 +945,7 @@ class Hud:
     def _on_motion(self, event):
         self._hover_xy = (event.x, event.y)
         self._apply_hover()
+        self._set_media_hover(self._media_at(event.x, event.y))
         rec = self._scroll_line_at(event.x, event.y)
         if rec is not None:
             self._start_marquee(rec)
@@ -667,6 +955,7 @@ class Hud:
     def _on_leave(self, event):
         self._hover_xy = None
         self._apply_hover()
+        self._set_media_hover(None)
         self._stop_marquee()
 
     def _fit_px(self, text, x_start):
@@ -691,6 +980,84 @@ class Hud:
             text = text[:-1]
         return text + "…"
 
+    def _schedule_path(self):
+        """Absolute .xlsx path from config (hud.schedule.path), or "" when unset
+        or malformed -> the tile stays hidden."""
+        sched = self.cfg["hud"].get("schedule") or {}
+        if not isinstance(sched, dict):
+            return ""
+        path = sched.get("path") or ""
+        return path if isinstance(path, str) else ""
+
+    def _schedule_now(self):
+        """Injectable clock for the schedule tile (tests override this)."""
+        return datetime.datetime.now()
+
+    def _start_schedule_poller(self):
+        """Start the daemon mtime poller (no-op without a configured path)."""
+        if not self._sched_path:
+            return
+        self._sched_thread = threading.Thread(
+            target=self._schedule_loop, name="schedpoller", daemon=True)
+        self._sched_thread.start()
+
+    def _schedule_loop(self):
+        """Every ~30s: re-read the file if its mtime changed. Never touches Tk."""
+        while not self._sched_stop.is_set():
+            try:
+                self._reload_schedule_if_changed()
+            except Exception:
+                pass
+            self._sched_stop.wait(30)
+
+    def _reload_schedule_if_changed(self):
+        """mtime-gated re-read + re-parse. A missing/locked file or a {} read
+        retains the last-good schedule (and retries next poll); only a non-empty
+        workbook replaces self.schedule."""
+        path = self._sched_path
+        if not path:
+            return
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            return
+        if mtime == self._sched_mtime:
+            return
+        workbook = schedxlsx.read_workbook(path)
+        if not workbook:
+            return
+        schedule = schedmodel.parse_schedule(workbook)
+        with self._sched_lock:
+            self.schedule = schedule
+            self._sched_mtime = mtime
+
+    def _draw_schedule_tile(self, y):
+        """Pinned "now" tile above the tab bar. kind 'now' -> "▸ task";
+        'next' -> "→ HH:MM  task"; 'none' -> hidden (y unchanged). Reuses the
+        pixel-fit ellipsis and registers a marquee record for a truncated line.
+        Not clickable (no URL)."""
+        with self._sched_lock:
+            schedule = self.schedule
+        slot = schedule.at(self._schedule_now())
+        if slot.kind == "none":
+            return y
+        if slot.kind == "now":
+            text = "▸ " + slot.task
+        else:
+            text = "→ %s  %s" % (slot.start.strftime("%H:%M"), slot.task)
+        c = self.canvas
+        y += FEED_TITLE_GAP
+        row_y = y + FEED_LINE_H // 2
+        fitted = self._fit_px(text, PAD)
+        tid = c.create_text(PAD, row_y, anchor="w", text=fitted,
+                            fill=ACCENT, font=FEED_TITLE_FONT)
+        self._feed_items.append(tid)
+        if fitted != text:
+            self._scroll_lines.append({"item": tid, "full": text, "x_start": PAD,
+                                       "y0": row_y - FEED_LINE_H // 2,
+                                       "y1": row_y + FEED_LINE_H // 2})
+        return y + FEED_LINE_H + FEED_TITLE_GAP
+
     def _draw_feeds(self):
         c = self.canvas
         for item_id in self._feed_items:
@@ -704,7 +1071,10 @@ class Hud:
             c.delete(self._hover_item)
             self._hover_item = None
         self._hover_rect = None
-        y = PAD + 5 * ROW_H + 4                   # below the 5-row header (CPU/RAM/GPU/media/clock)
+        y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H    # below the header rows + reserved now-playing band
+        y = self._draw_schedule_tile(y)   # pinned "now" tile, above the tab bar
+        for idx in self._weather_indices():   # weather: always shown, own tile (not tab-scoped)
+            y = self._draw_tile(idx, self.manager.feeds[idx], y)
         y = self._draw_tab_bar(y)
         news = [i for i in self._news_indices()
                 if self.manager.feeds[i].get("tab") == self.active_tab]
@@ -812,6 +1182,79 @@ class Hud:
                 self._feed_items.append(ul)
             x -= w + 6
 
+    def _draw_weather_tile(self, idx, payload, y):
+        c = self.canvas
+        y += FEED_TITLE_GAP
+        row_y = y + FEED_LINE_H // 2
+        tid = c.create_text(PAD, row_y, anchor="w", text=_fit(payload["title"]),
+                            fill=FEED_FG, font=FEED_TITLE_FONT)
+        self._feed_items.append(tid)
+        self._draw_weather_range_toggle(idx, payload["range"], row_y)
+        y += FEED_LINE_H
+        w = payload["weather"]
+        if w is None:
+            msg = ("! " + payload["error"]) if (payload["state"] != "loading" and payload["error"]) else "loading…"
+            lid = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                                text=_fit(msg), fill=FEED_DIM, font=FEED_FONT)
+            self._feed_items.append(lid)
+            return y + FEED_LINE_H
+        stale = payload["state"] in ("stale", "error")
+        fg = FEED_DIM if stale else FEED_FG
+        color = FEED_DIM if stale else ACCENT
+        # Lead row: condition glyph + current temperature + condition word.
+        cx = PAD + 6
+        glyph = feedmodel.weather_glyph(w.code)
+        if glyph:
+            gid = c.create_text(cx, y + WEATHER_HEAD_H // 2, anchor="w", text=glyph,
+                                fill=color, font=WEATHER_GLYPH_FONT)
+            self._feed_items.append(gid)
+            cx += self._weather_glyph_font.measure(glyph) + 4
+        curid = c.create_text(cx, y + WEATHER_HEAD_H // 2, anchor="w",
+                              text=_fit(feedmodel.format_weather_current(w)),
+                              fill=fg, font=FEED_TITLE_FONT)
+        self._feed_items.append(curid)
+        y += WEATHER_HEAD_H
+        # Row: hi / lo (+ feels-like when known).
+        hlid = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                             text=_fit(feedmodel.format_weather_hilo(w)),
+                             fill=fg, font=FEED_FONT)
+        self._feed_items.append(hlid)
+        y += FEED_LINE_H
+        # Row: humidity / wind / rain chance -- only when at least one is known.
+        detail = feedmodel.format_weather_detail(w)
+        if detail:
+            did = c.create_text(PAD + 6, y + FEED_LINE_H // 2, anchor="w",
+                                text=_fit(detail), fill=FEED_DIM, font=FEED_FONT)
+            self._feed_items.append(did)
+            y += FEED_LINE_H
+        pts = _stock_points(w.series, PAD + 6, self.width - PAD, y + 2, y + STOCK_CHART_H - 2)
+        if pts:
+            bottom = y + STOCK_CHART_H - 2
+            poly = c.create_polygon(*(pts + [pts[-2], bottom, pts[0], bottom]),
+                                    fill=color, stipple="gray25", outline="")
+            self._feed_items.append(poly)
+            ln = c.create_line(*pts, fill=color, width=1)
+            self._feed_items.append(ln)
+        y += STOCK_CHART_H
+        return y
+
+    def _draw_weather_range_toggle(self, idx, current, row_y):
+        c = self.canvas
+        x = self.width - PAD
+        for code in reversed(feedmodel.WEATHER_RANGE_ORDER):     # draw right->left; 7D rightmost
+            label = feedmodel.WEATHER_RANGE_LABELS[code]
+            active = (code == current)
+            tid = c.create_text(x, row_y, anchor="e", text=label,
+                                fill=(FEED_FG if active else FEED_DIM), font=FEED_FONT)
+            self._feed_items.append(tid)
+            w = self._feed_font_measure.measure(label)
+            self._register_action(row_y, x - w, x, ("range", idx, code))
+            if active:
+                uy = row_y + FEED_LINE_H // 2 - 1
+                ul = c.create_rectangle(x - w, uy, x, uy + 2, fill=ACCENT, outline="")
+                self._feed_items.append(ul)
+            x -= w + 6
+
     def _resize(self, wanted_h):
         sh = self.root.winfo_screenheight()
         new_h = max(HEIGHT, min(int(wanted_h), sh - self.root.winfo_y()))
@@ -832,19 +1275,127 @@ class Hud:
         # Cleanup only -- never destroys the root (mirrors petkit Cat.close). The
         # single root.destroy() is the quit path in main(); close() runs after it
         # (in main's finally) and the tests call close() then destroy() themselves.
+        if self._tick_after is not None:
+            try:
+                self.root.after_cancel(self._tick_after)
+            except Exception:
+                pass
+            self._tick_after = None
         if self._drain_after is not None:
             try:
                 self.root.after_cancel(self._drain_after)
             except Exception:
                 pass
             self._drain_after = None
+        if self._dock_after is not None:
+            try:
+                self.root.after_cancel(self._dock_after)
+            except Exception:
+                pass
+            self._dock_after = None
         self._stop_marquee()
+        self._np_stop.set()
+        if self._np_marquee_after is not None:
+            try:
+                self.root.after_cancel(self._np_marquee_after)
+            except Exception:
+                pass
+            self._np_marquee_after = None
         try:
             self.manager.stop()
         except Exception:
             pass
+        if self._sched_thread is not None:
+            self._sched_stop.set()
+            try:
+                self._sched_thread.join(timeout=2)
+            except Exception:
+                pass
         if getattr(self, "settings", None) is not None:
             self.settings.close()
+
+    def _on_dock_enter(self, event):
+        """Pointer entered the window: if docked, slide fully into view."""
+        if self._dock_edge:
+            self._dock_animate(revealed=True)
+
+    def _on_dock_leave(self, event):
+        """Pointer left the window: if docked, slide back out to the peeking lip."""
+        if self._dock_edge:
+            self._dock_animate(revealed=False)
+
+    def _maybe_dock(self):
+        """On drag-release, snap to a screen edge if within DOCK_THRESHOLD (and
+        slide to the hidden lip), else undock. Session-only; never persisted."""
+        try:
+            x = self.root.winfo_x(); y = self.root.winfo_y()
+            w = self.root.winfo_width(); h = self.root.winfo_height()
+            sw = self.root.winfo_screenwidth(); sh = self.root.winfo_screenheight()
+        except Exception:
+            return
+        self._dock_edge = edge_for(x, y, w, h, sw, sh, DOCK_THRESHOLD)
+        if self._dock_edge:
+            self._dock_animate(revealed=False)   # slide out to the peeking lip
+
+    def _target_from(self, edge, revealed):
+        """Parse docked_geometry(edge, ...) into (w, h, x, y) ints for the slide
+        animator. Uses the live window size so it composes with the width toggle."""
+        w = self.root.winfo_width(); h = self.root.winfo_height()
+        sw = self.root.winfo_screenwidth(); sh = self.root.winfo_screenheight()
+        x = self.root.winfo_x(); y = self.root.winfo_y()
+        geo = docked_geometry(edge, x, y, w, h, sw, sh, revealed, DOCK_LIP)
+        size, _, rest = geo.partition("+")       # "WxH", "+", "X+Y" (X may be -N)
+        gw, gh = size.split("x")
+        gx, gy = rest.split("+")
+        return int(gw), int(gh), int(gx), int(gy)
+
+    def _dock_animate(self, revealed):
+        """Start (or restart) the chained-after slide toward the docked target for
+        the current edge. No-op when not docked. Guarded so a bad geometry never
+        crashes the HUD."""
+        if not self._dock_edge:
+            return
+        if self._dock_after is not None:
+            try:
+                self.root.after_cancel(self._dock_after)
+            except Exception:
+                pass
+            self._dock_after = None
+        try:
+            self._dock_target = self._target_from(self._dock_edge, revealed)
+        except Exception:
+            self._dock_target = None
+            return
+        self._dock_steps = DOCK_ANIM_STEPS
+        self._dock_step()
+
+    def _dock_step(self):
+        """One frame of the dock slide: move a fraction toward _dock_target and, if
+        frames remain, reschedule. The final frame snaps exactly and clears state."""
+        if self._dock_target is None:
+            return
+        w, h, tx, ty = self._dock_target
+        try:
+            cx = self.root.winfo_x(); cy = self.root.winfo_y()
+        except Exception:
+            self._dock_target = None
+            self._dock_after = None
+            return
+        if self._dock_steps <= 1:
+            nx, ny = tx, ty
+        else:
+            nx = cx + (tx - cx) // self._dock_steps
+            ny = cy + (ty - cy) // self._dock_steps
+        try:
+            self.root.geometry("%dx%d+%d+%d" % (w, h, nx, ny))
+        except Exception:
+            pass
+        self._dock_steps -= 1
+        if self._dock_steps <= 0:
+            self._dock_target = None
+            self._dock_after = None
+        else:
+            self._dock_after = self.root.after(DOCK_ANIM_MS, self._dock_step)
 
     def _open_at(self, x, y):
         for y0, y1, url in self._hit:
@@ -865,6 +1416,7 @@ class Hud:
         self.width = WIDTH_WIDE if self.width == WIDTH else WIDTH
         self._relayout_header()
         self._draw()          # repaint header (clock/media/sparklines) at the new width
+        self._draw_nowplaying()  # re-fill bar + reposition time labels at the new width
         self._draw_feeds()    # reflow feeds + resize the window (via _resize)
 
     def _relayout_header(self):
@@ -874,7 +1426,13 @@ class Hud:
         c = self.canvas
         cx = self.width // 2
         c.coords(self._clock_text, cx, self.canvas.coords(self._clock_text)[1])
-        ymedia = PAD + 3 * ROW_H + ROW_H // 2    # media row 4 (above clock)
+        c.coords(self._np_title, cx, self.canvas.coords(self._np_title)[1])
+        b_left, b_right = self._np_bar_bounds()
+        c.coords(self._np_bar_bg, b_left, self._np_bar_y, b_right, self._np_bar_y + NP_BAR_H)
+        c.coords(self._np_elapsed, b_left - 5, self._np_row_y)
+        c.coords(self._np_total, b_right + 5, self._np_row_y)
+        self._np_bar_span = (b_left, b_right)
+        ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media row 5 (above clock)
         gap = 54                       # more breathing room between the transport glyphs
         c.coords(self._media_prev, cx - gap, ymedia)
         c.coords(self._media_play, cx, ymedia)
@@ -885,7 +1443,7 @@ class Hud:
             (cx - half,       cx + half,       ymedia - vhalf, ymedia + vhalf, "playpause"),
             (cx + gap - half, cx + gap + half, ymedia - vhalf, ymedia + vhalf, "next"),
         ]
-        y3 = PAD + 4 * ROW_H + ROW_H // 2        # clock + expand row 5 (under media)
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, below the now-playing band
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
 
@@ -911,18 +1469,53 @@ class Hud:
         self._draw_feeds()
 
     def _set_stock_range(self, idx, code):
-        self.manager.set_stock_range(idx, code)
+        feeds = self.manager.feeds
+        ftype = feeds[idx].get("type") if 0 <= idx < len(feeds) else None
+        if ftype == "weather":
+            self.manager.set_weather_range(idx, code)
+        else:
+            self.manager.set_stock_range(idx, code)
         self.feed_state.pop(idx, None)
         self._draw_feeds()
 
-    def _reload_feeds(self):
-        reloaded = config.load(self.CFG_PATH)
+    def _reload_feeds(self, reloaded=None):
+        if reloaded is None:
+            reloaded = config.load(self.CFG_PATH)
         self.cfg["feeds"] = reloaded.get("feeds", [])
         self.cfg["hud"]["github_token"] = reloaded["hud"].get("github_token", "")
         self.feed_state = {}
         self.manager.set_token(self._github_token())
         self.manager.set_feeds(self.cfg["feeds"])
         self._draw_feeds()
+
+    def _config_mtime(self):
+        """config.json's mtime, or None if it can't be stat'd. Cheap (one syscall)."""
+        try:
+            return os.stat(self.CFG_PATH).st_mtime
+        except OSError:
+            return None
+
+    def _reload_feeds_if_config_changed(self):
+        """Live-reload feeds when config.json changes on disk. mtime-gated, so the
+        common case is a single os.stat per tick. Only reloads when the feeds or
+        github_token actually differ from what's loaded -- so the HUD's own window-
+        position/opacity saves (and any other toy's writes to its own section)
+        change the mtime but never trigger a disruptive feed refetch. Runs on the
+        main thread (called from tick()), so touching Tk in _reload_feeds is safe.
+        Never raises."""
+        try:
+            mtime = self._config_mtime()
+            if mtime is None or mtime == self._cfg_mtime:
+                return
+            self._cfg_mtime = mtime
+            reloaded = config.load(self.CFG_PATH)
+            if (reloaded.get("feeds", []) == self.cfg["feeds"]
+                    and reloaded["hud"].get("github_token", "")
+                    == self.cfg["hud"].get("github_token", "")):
+                return                            # nothing feed-relevant changed
+            self._reload_feeds(reloaded)
+        except Exception:
+            pass
 
 
 def main():

@@ -213,7 +213,7 @@ class TestNormalizeFeed(unittest.TestCase):
         self.assertEqual(f["interval"], 300)            # floored
 
     def test_unknown_type_invalid_but_titled(self):
-        f = model.normalize_feed({"type": "weather", "title": "Sky"})
+        f = model.normalize_feed({"type": "podcast", "title": "Sky"})
         self.assertFalse(f["valid"])
         self.assertIn("unknown type", f["error"])
         self.assertEqual(f["title"], "Sky")
@@ -467,6 +467,182 @@ class TestDueFeeds(unittest.TestCase):
     def test_invalid_feeds_skipped(self):
         feeds = [{"valid": False, "error": "x"}, self._valid(300)]
         self.assertEqual(model.due_feeds(feeds, {}, 10.0), [1])
+
+
+class TestWeatherModel(unittest.TestCase):
+    def test_weather_is_not_news_type_but_is_valid(self):
+        self.assertFalse(model.is_news_type("weather"))   # always-shown, not tab-scoped
+        self.assertIn("weather", model._VALID_TYPES)
+
+    def test_geocode_url(self):
+        self.assertEqual(
+            model.openmeteo_geocode_url("Boston"),
+            "https://geocoding-api.open-meteo.com/v1/search?name=Boston"
+            "&count=1&language=en&format=json")
+
+    def test_geocode_url_encodes_city(self):
+        self.assertIn("name=New%20York", model.openmeteo_geocode_url("New York"))
+
+    def test_forecast_url_today_is_one_day(self):
+        u = model.openmeteo_forecast_url(42.36, -71.06, "fahrenheit", "today")
+        self.assertIn("latitude=42.36", u)
+        self.assertIn("longitude=-71.06", u)
+        self.assertIn("temperature_unit=fahrenheit", u)
+        self.assertIn("forecast_days=1", u)
+        self.assertIn("current=temperature_2m", u)
+        self.assertIn("hourly=temperature_2m", u)
+        self.assertIn("daily=temperature_2m_max,temperature_2m_min", u)
+        self.assertIn("timezone=auto", u)
+
+    def test_forecast_url_ranges_map_to_days(self):
+        self.assertIn("forecast_days=3",
+                      model.openmeteo_forecast_url(1.0, 2.0, "celsius", "3d"))
+        self.assertIn("forecast_days=7",
+                      model.openmeteo_forecast_url(1.0, 2.0, "celsius", "7d"))
+
+    def test_forecast_url_unknown_range_defaults_today(self):
+        self.assertIn("forecast_days=1",
+                      model.openmeteo_forecast_url(1.0, 2.0, "celsius", "zzz"))
+
+    def test_forecast_url_unknown_units_defaults_fahrenheit(self):
+        self.assertIn("temperature_unit=fahrenheit",
+                      model.openmeteo_forecast_url(1.0, 2.0, "kelvin", "today"))
+
+    def test_weather_shape(self):
+        w = model.Weather(72.0, 78.0, 61.0, [70.0, 72.0], "°F")
+        self.assertEqual(w._fields,
+                         ("current", "hi", "lo", "series", "unit",
+                          "code", "feels", "humidity", "wind", "precip"))
+
+    def test_weather_new_fields_default_when_omitted(self):
+        # Backward-compat: the 5-arg positional construction still works and the
+        # richer fields fall to unknown sentinels.
+        w = model.Weather(72.0, 78.0, 61.0, [70.0], "°F")
+        self.assertEqual(w.code, -1)
+        self.assertIsNone(w.feels)
+        self.assertIsNone(w.humidity)
+        self.assertIsNone(w.wind)
+        self.assertIsNone(w.precip)
+
+    def test_forecast_url_requests_richer_current_and_daily(self):
+        u = model.openmeteo_forecast_url(1.0, 2.0, "fahrenheit", "today")
+        self.assertIn("weather_code", u)
+        self.assertIn("apparent_temperature", u)
+        self.assertIn("relative_humidity_2m", u)
+        self.assertIn("wind_speed_10m", u)
+        self.assertIn("precipitation_probability_max", u)
+        self.assertIn("wind_speed_unit=mph", u)          # imperial pairs with mph
+
+    def test_forecast_url_celsius_uses_kmh_wind(self):
+        u = model.openmeteo_forecast_url(1.0, 2.0, "celsius", "today")
+        self.assertIn("wind_speed_unit=kmh", u)
+
+    def test_weather_glyph_and_label_buckets(self):
+        self.assertEqual((model.weather_glyph(0), model.weather_label(0)),
+                         ("☀", "Clear"))            # ☀ clear
+        self.assertEqual(model.weather_label(2), "Partly")
+        self.assertEqual(model.weather_label(3), "Cloudy")
+        self.assertEqual(model.weather_label(48), "Fog")
+        self.assertEqual(model.weather_label(63), "Rain")
+        self.assertEqual(model.weather_label(81), "Showers")
+        self.assertEqual(model.weather_label(75), "Snow")
+        self.assertEqual(model.weather_label(95), "Storm")
+
+    def test_weather_glyph_unknown_is_empty(self):
+        self.assertEqual(model.weather_glyph(-1), "")
+        self.assertEqual(model.weather_label(999), "")
+        self.assertEqual(model.weather_glyph(None), "")
+
+    def test_format_weather_current_temp_and_condition(self):
+        w = model.Weather(72.4, 78.0, 61.0, [], "°F", code=0)
+        self.assertEqual(model.format_weather_current(w), "72°  Clear")
+
+    def test_format_weather_current_omits_unknown_condition(self):
+        w = model.Weather(72.4, 78.0, 61.0, [], "°F")   # code defaults to -1
+        self.assertEqual(model.format_weather_current(w), "72°")
+
+    def test_format_weather_hilo_rounds(self):
+        w = model.Weather(72.4, 78.6, 61.2, [], "°F")
+        self.assertEqual(model.format_weather_hilo(w), "H 79°  L 61°")
+
+    def test_format_weather_hilo_appends_feels(self):
+        w = model.Weather(72.0, 78.0, 61.0, [], "°F", feels=52.6)
+        self.assertEqual(model.format_weather_hilo(w), "H 78°  L 61°  Feels 53°")
+
+    def test_format_weather_detail_present_fields(self):
+        w = model.Weather(72.0, 78.0, 61.0, [], "°F",
+                          humidity=72, wind=9.4, precip=10)
+        self.assertEqual(model.format_weather_detail(w),
+                         "Hum 72%   Wind 9mph   Rain 10%")
+
+    def test_format_weather_detail_celsius_wind_unit(self):
+        w = model.Weather(20.0, 24.0, 15.0, [], "°C", wind=14.6)
+        self.assertEqual(model.format_weather_detail(w), "Wind 15km/h")
+
+    def test_format_weather_detail_empty_when_no_fields(self):
+        w = model.Weather(72.0, 78.0, 61.0, [], "°F")
+        self.assertEqual(model.format_weather_detail(w), "")
+
+    def test_normalize_minimal_valid(self):
+        f = model.normalize_feed({"type": "weather", "city": "Boston", "tab": "global"})
+        self.assertTrue(f["valid"])
+        self.assertEqual(f["city"], "Boston")
+        self.assertEqual(f["units"], "fahrenheit")   # default
+        self.assertEqual(f["range"], "today")        # default
+        self.assertEqual(f["interval"], 1800)        # default
+        self.assertEqual(f["title"], "Weather")      # default title
+        self.assertNotIn("tab", f)                   # always-shown, not tab-scoped
+
+    def test_normalize_units_and_range_coerce(self):
+        f = model.normalize_feed({"type": "weather", "city": "X",
+                                  "units": "celsius", "range": "7d"})
+        self.assertEqual(f["units"], "celsius")
+        self.assertEqual(f["range"], "7d")
+
+    def test_normalize_bad_units_and_range_default(self):
+        f = model.normalize_feed({"type": "weather", "city": "X",
+                                  "units": "kelvin", "range": "10y"})
+        self.assertEqual(f["units"], "fahrenheit")
+        self.assertEqual(f["range"], "today")
+
+    def test_normalize_missing_city_invalid(self):
+        f = model.normalize_feed({"type": "weather", "city": "  "})
+        self.assertFalse(f["valid"])
+        self.assertIn("city", f["error"])
+        self.assertEqual(f["title"], "Weather")
+
+    def test_normalize_interval_floor_600(self):
+        self.assertEqual(model.normalize_feed(
+            {"type": "weather", "city": "X", "interval": 5})["interval"], 600)
+
+    def test_normalize_weather_has_no_tab(self):
+        # weather is always-shown, not tab-scoped, so it carries no tab key.
+        f = model.normalize_feed({"type": "weather", "city": "X"})
+        self.assertTrue(f["valid"])
+        self.assertNotIn("tab", f)
+
+
+class TestParseSymbols(unittest.TestCase):
+    def test_splits_on_commas_and_spaces_uppercases(self):
+        self.assertEqual(model.parse_symbols("spy, meta nvda"), ["SPY", "META", "NVDA"])
+
+    def test_strips_junk_chars_keeps_allowed(self):
+        self.assertEqual(model.parse_symbols("brk-b ^gspc a@b!"), ["BRK-B", "^GSPC", "AB"])
+
+    def test_dedupes_preserving_first_seen_order(self):
+        self.assertEqual(model.parse_symbols("aapl AAPL msft aapl"), ["AAPL", "MSFT"])
+
+    def test_caps_at_ten(self):
+        syms = model.parse_symbols(" ".join("S%d" % i for i in range(20)))
+        self.assertEqual(len(syms), 10)
+        self.assertEqual(syms[0], "S0")
+        self.assertEqual(syms[-1], "S9")
+
+    def test_empty_and_non_str_return_empty(self):
+        self.assertEqual(model.parse_symbols(""), [])
+        self.assertEqual(model.parse_symbols("   ,  "), [])
+        self.assertEqual(model.parse_symbols(None), [])
+        self.assertEqual(model.parse_symbols(123), [])
 
 
 if __name__ == "__main__":

@@ -193,6 +193,8 @@ class FeedManager:
             return self._process_search(idx, feed, token)
         if feed["type"] == "stocks":
             return self._process_stocks(idx, feed)
+        if feed["type"] == "weather":
+            return self._process_weather(idx, feed)
         if feed["type"] == "github":
             return self._process_github(idx, feed, token)
         with self._lock:
@@ -270,6 +272,65 @@ class FeedManager:
         else:
             state = "error"
         return FeedResult(state, quotes, None, any_error)
+
+    def _process_weather(self, idx, feed):
+        """Geocode the city once (cached under (idx,'geo') so lat/lon survive range
+        changes), then conditional-GET the forecast under (idx,'wx') -> {etag, lm,
+        result}. Geocode failure / city-not-found -> error tile. Forecast
+        not_modified reuses the cached result (fresh); forecast error or bad data
+        keeps the last-good Weather (stale) like stocks; no cache -> error."""
+        geo_key = (idx, "geo")
+        with self._lock:
+            coords = self._cache.get(geo_key, {}).get("coords")
+        if coords is None:
+            gres = self._fetch(model.openmeteo_geocode_url(feed["city"]))
+            if gres.status != "ok":
+                return FeedResult("error", [], None, gres.error or "geocode failed")
+            coords = parse.parse_geocode(gres.body)
+            if coords is None:
+                return FeedResult("error", [], None, "city not found")
+            with self._lock:
+                self._cache[geo_key] = {"coords": coords}
+        lat, lon, _name = coords
+        fx_key = (idx, "wx")
+        with self._lock:
+            cache = self._cache.get(fx_key, {})
+        res = self._fetch(model.openmeteo_forecast_url(lat, lon, feed["units"], feed["range"]),
+                          etag=cache.get("etag"), last_modified=cache.get("lm"))
+        prev = cache.get("result")
+        if res.status == "not_modified":
+            return prev or FeedResult("ok", [], None, None)
+        if res.status == "error":
+            return FeedResult("stale" if prev else "error",
+                              prev.items if prev else [], None, res.error)
+        weather = parse.parse_weather(res.body, feed["range"])
+        if weather is None:
+            return FeedResult("stale" if prev else "error",
+                              prev.items if prev else [], None, "bad data")
+        result = FeedResult("ok", [weather], None, None)
+        with self._lock:
+            self._cache[fx_key] = {"etag": res.etag, "lm": res.last_modified, "result": result}
+        return result
+
+    def set_weather_range(self, idx, code):
+        """UI-thread session-state range change for a weather feed. No-op unless idx
+        is a valid weather feed and code is a known range. Replaces the feed with a
+        copy carrying the new range and drops its (idx,'wx',*) forecast cache +
+        last-fetch so the worker refetches the new range next tick. The (idx,'geo')
+        geocode cache is kept -- coordinates do not depend on the range."""
+        with self._lock:
+            if not (0 <= idx < len(self.feeds)):
+                return
+            feed = self.feeds[idx]
+            if not feed.get("valid") or feed.get("type") != "weather" or code not in model.WEATHER_RANGES:
+                return
+            new = dict(feed)
+            new["range"] = code
+            self.feeds[idx] = new
+            for k in [k for k in self._cache
+                      if isinstance(k, tuple) and len(k) == 2 and k[0] == idx and k[1] == "wx"]:
+                self._cache.pop(k, None)
+            self._last.pop(idx, None)
 
     def _process_github(self, idx, feed, token):
         repo, branch, show = feed["repo"], feed["branch"], feed["show"]

@@ -4,6 +4,7 @@ maps every failure to a short tile word. Verified on Python 3.12 / Windows: the
 stdlib default TLS context verifies against the Windows cert store (no certifi),
 and a 304 is RAISED as HTTPError(code=304) rather than returned."""
 import ssl
+import time
 import urllib.error
 import urllib.request
 from collections import namedtuple
@@ -18,6 +19,14 @@ FetchResult = namedtuple(
 SendResult = namedtuple("SendResult", ["status", "code", "error"], defaults=(None, None))
 
 _DEFAULT_UA = "Toybox-WebFeed/1.0"
+
+# Error words worth one immediate retry: only the transient network class. A
+# dropped packet / momentary DNS hiccup / a spike past the socket timeout maps to
+# "offline"; retrying once usually rides over it. Deterministic failures (HTTP
+# status words, "too large", "cert error") are NOT retried -- a second identical
+# request would fail identically and only waste the worker's time.
+_RETRYABLE_ERRORS = ("offline",)
+_RETRY_DELAY_S = 0.5   # brief pause before the single retry, so a blip has cleared
 
 
 def _error_word(exc):
@@ -49,7 +58,28 @@ def _poll_interval(response):
         return None
 
 
-def fetch(url, headers=None, etag=None, last_modified=None, timeout=12, max_bytes=2_000_000):
+def fetch(url, headers=None, etag=None, last_modified=None, timeout=12,
+          max_bytes=2_000_000, retries=1, retry_delay=_RETRY_DELAY_S):
+    """Conditional HTTP GET with a bounded retry on transient network failure.
+    On a result whose error is in _RETRYABLE_ERRORS ('offline' -- URLError/
+    TimeoutError), retry up to `retries` times after `retry_delay` seconds, so a
+    single dropped/slow request doesn't strand a tile on 'offline' until its next
+    (minutes-away) poll. A 304, any 200, and every deterministic error return on
+    the first attempt. Runs on the feed worker thread; the retry sleep is bounded
+    and the worker's stop() join tolerates it."""
+    result = _fetch_once(url, headers, etag, last_modified, timeout, max_bytes)
+    attempt = 0
+    while (attempt < retries and result.status == "error"
+           and result.error in _RETRYABLE_ERRORS):
+        attempt += 1
+        if retry_delay > 0:
+            time.sleep(retry_delay)
+        result = _fetch_once(url, headers, etag, last_modified, timeout, max_bytes)
+    return result
+
+
+def _fetch_once(url, headers=None, etag=None, last_modified=None, timeout=12,
+                max_bytes=2_000_000):
     request_headers = {"User-Agent": _DEFAULT_UA}
     if headers:
         request_headers.update(headers)

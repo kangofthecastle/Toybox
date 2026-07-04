@@ -295,6 +295,84 @@ def parse_stock_chart(body, symbol):
         return None
 
 
+def parse_geocode(body):
+    """Parse an Open-Meteo geocoding response into (lat, lon, name), or None.
+    NEVER raises. Takes the first result; requires finite lat/lon; name defaults
+    to "" when missing."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    try:
+        results = data.get("results") if isinstance(data, dict) else None
+        if not results:
+            return None
+        r = results[0]
+        if not isinstance(r, dict):
+            return None
+        lat, lon = r.get("latitude"), r.get("longitude")
+        if not _finite_num(lat) or not _finite_num(lon):
+            return None
+        name = r.get("name")
+        name = name if isinstance(name, str) and name else ""
+        return (float(lat), float(lon), name)
+    except Exception:
+        return None
+
+
+def parse_weather(body, range_):
+    """Parse an Open-Meteo forecast response into a model.Weather, or None. NEVER
+    raises. 'today' -> hourly series + today's daily max/min; '3d'/'7d' -> daily-max
+    series + max(daily max)/min(daily min). Non-finite series values are dropped.
+    Returns None only when the current temperature is missing/unparseable."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        cur = data.get("current")
+        cur = cur if isinstance(cur, dict) else {}
+        current = cur.get("temperature_2m")
+        if not _finite_num(current):
+            return None
+        units_map = data.get("current_units")
+        unit = ""
+        if isinstance(units_map, dict) and isinstance(units_map.get("temperature_2m"), str):
+            unit = units_map.get("temperature_2m")
+        daily = data.get("daily")
+        daily = daily if isinstance(daily, dict) else {}
+        dmax = [float(v) for v in (daily.get("temperature_2m_max") or []) if _finite_num(v)]
+        dmin = [float(v) for v in (daily.get("temperature_2m_min") or []) if _finite_num(v)]
+        if range_ == "today":
+            hourly = data.get("hourly")
+            hourly = hourly if isinstance(hourly, dict) else {}
+            series = [float(v) for v in (hourly.get("temperature_2m") or []) if _finite_num(v)]
+            hi = dmax[0] if dmax else (max(series) if series else current)
+            lo = dmin[0] if dmin else (min(series) if series else current)
+        else:
+            series = dmax
+            hi = max(dmax) if dmax else current
+            lo = min(dmin) if dmin else current
+        code = int(cur.get("weather_code")) if _finite_num(cur.get("weather_code")) else -1
+        feels = cur.get("apparent_temperature")
+        feels = float(feels) if _finite_num(feels) else None
+        humidity = cur.get("relative_humidity_2m")
+        humidity = int(round(float(humidity))) if _finite_num(humidity) else None
+        wind = cur.get("wind_speed_10m")
+        wind = float(wind) if _finite_num(wind) else None
+        precip = None
+        for v in (daily.get("precipitation_probability_max") or []):
+            if _finite_num(v):
+                precip = int(round(float(v)))
+                break
+        return model.Weather(float(current), float(hi), float(lo), series, unit,
+                             code, feels, humidity, wind, precip)
+    except Exception:
+        return None
+
+
 def compose_github_status(repo, branch, ci_state, notif_count, ci_shown=True):
     """Build the github tile's header Status. When CI is shown the text leads with
     the colored ● + CI word and the click target is the repo's Actions page; a
