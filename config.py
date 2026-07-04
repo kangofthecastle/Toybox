@@ -7,7 +7,9 @@ import tempfile
 
 DEFAULTS = {
     "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False, "github_token": "",
-            "schedule": {"path": ""}},
+            "schedule": {"path": ""},
+            "audio": {"speaker": {"id": "", "name": ""},
+                      "headphone": {"id": "", "name": ""}}},
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True, "layout": "columns",
                   "sync": False, "sync_passphrase": "", "persist_recent": True,
