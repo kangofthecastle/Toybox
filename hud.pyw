@@ -383,6 +383,7 @@ class Hud:
             w.bind("<B1-Motion>", self._on_drag)
             w.bind("<ButtonRelease-1>", self._on_release)
             w.bind("<Button-3>", self._on_menu)
+            w.bind("<MouseWheel>", self._on_wheel)
             w.bind("<Motion>", self._on_motion)
             w.bind("<Leave>", self._on_leave)
             w.bind("<Enter>", self._on_dock_enter, add="+")
@@ -414,10 +415,18 @@ class Hud:
     # --- dragging ---------------------------------------------------------
     def _on_press(self, event):
         self._moved = False
+        self._vol_dragging = False
+        self._vol_press_glyph = self._vol_glyph_hit(event.x, event.y)
         self._drag_dx = event.x_root - self.root.winfo_x()
         self._drag_dy = event.y_root - self.root.winfo_y()
+        if not self._vol_press_glyph and self._vol_hit(event.x, event.y):
+            self._vol_dragging = True                 # slider grab: adjust volume, don't move window
+            self._vol_set_from_x(event.x)
 
     def _on_drag(self, event):
+        if self._vol_dragging:
+            self._vol_set_from_x(event.x)             # adjust volume; window stays put
+            return
         if self.lock_var.get():
             return  # position is locked
         self._moved = True
@@ -426,6 +435,18 @@ class Hud:
         self.root.geometry(f"+{x}+{y}")
 
     def _on_release(self, event):
+        if self._vol_dragging:
+            self._vol_dragging = False
+            try:
+                audiovolume.set_level(audiovolume.clamp01(self._vol_level))  # final position sticks
+            except Exception:
+                pass
+            return
+        if self._vol_press_glyph:
+            self._vol_press_glyph = False
+            if not self._moved and self._vol_glyph_hit(event.x, event.y):
+                self._toggle_mute()
+                return
         if not self._moved:
             if self._in_expand(event.x, event.y):
                 self._toggle_width()
@@ -757,6 +778,53 @@ class Hud:
             c.itemconfig(self._vol_pct, text=audiovolume.format_pct(frac))
         except tk.TclError:
             pass
+
+    def _vol_hit(self, x, y):
+        """True if (x, y) is on the slider track (a generous vertical band)."""
+        v_left, v_right = self._vol_bar_span
+        return (v_left - 8 <= x <= v_right + 8 and
+                self._vol_row_y - (VOL_KNOB_R + 5) <= y <= self._vol_row_y + (VOL_KNOB_R + 5))
+
+    def _vol_glyph_hit(self, x, y):
+        """True if (x, y) is on the mute/speaker glyph at the row's left."""
+        return (PAD - 2 <= x <= PAD + VOL_GLYPH_W - 2 and
+                self._vol_row_y - 10 <= y <= self._vol_row_y + 10)
+
+    def _vol_set_from_x(self, x):
+        """Set the level from a click/drag x: update the shown value immediately,
+        unmute if muted (matches Windows), and write to the device (throttled to
+        ~30 ms so a fast drag doesn't hammer COM)."""
+        v_left, v_right = self._vol_bar_span
+        frac = audiovolume.level_from_x(x, v_left, v_right)
+        self._vol_level = frac
+        if self._vol_muted:
+            self._vol_muted = False
+            audiovolume.set_mute(False)
+        self._draw_volume()
+        now = time.monotonic()
+        if now - self._vol_apply_at >= 0.03:
+            audiovolume.set_level(frac)
+            self._vol_apply_at = now
+
+    def _toggle_mute(self):
+        """Flip mute (the speaker glyph); reflect it immediately."""
+        self._vol_muted = not self._vol_muted
+        audiovolume.set_mute(self._vol_muted)
+        self._draw_volume()
+
+    def _on_wheel(self, event):
+        """Mouse wheel over the track nudges the level +/-2% per notch; ignored
+        elsewhere. A nudge up also unmutes."""
+        if not self._vol_hit(event.x, event.y):
+            return
+        step = 0.02 if getattr(event, "delta", 0) > 0 else -0.02
+        base = self._vol_level if self._vol_level is not None else 0.0
+        self._vol_level = audiovolume.step_level(base, step)
+        if self._vol_muted and step > 0:
+            self._vol_muted = False
+            audiovolume.set_mute(False)
+        audiovolume.set_level(self._vol_level)
+        self._draw_volume()
 
     def _draw_nowplaying(self):
         """Update the title line, progress bar and elapsed/total time labels from

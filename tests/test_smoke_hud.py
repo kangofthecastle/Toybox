@@ -2387,5 +2387,80 @@ class TestHudVolume(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudVolumeInteraction(TestHudVolume):
+    def _ev(self, x, y, x_root=0, y_root=0, delta=0):
+        return type("E", (), {"x": x, "y": y, "x_root": x_root, "y_root": y_root,
+                              "delta": delta})()
+
+    def test_drag_sets_level_and_does_not_move_window(self):
+        root, hud = self._make_hud([])
+        try:
+            root.update_idletasks()
+            geo_before = root.geometry()
+            v_left, v_right = hud._vol_bar_span
+            vy = hud._vol_row_y
+            hud._on_press(self._ev(v_left, vy, x_root=500, y_root=500))
+            self.assertTrue(hud._vol_dragging)
+            quarter = v_left + (v_right - v_left) // 4
+            hud._on_drag(self._ev(quarter, vy, x_root=400, y_root=500))
+            self.assertAlmostEqual(hud._vol_level, 0.25, delta=0.05)
+            self.assertEqual(root.geometry(), geo_before)     # window did NOT move
+            self.assertTrue(self.vol_sets)                    # a real set was requested
+            hud._on_release(self._ev(quarter, vy))
+            self.assertFalse(hud._vol_dragging)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_click_on_track_jumps_to_that_level(self):
+        root, hud = self._make_hud([])
+        try:
+            v_left, v_right = hud._vol_bar_span
+            vy = hud._vol_row_y
+            three_q = v_left + 3 * (v_right - v_left) // 4
+            hud._on_press(self._ev(three_q, vy, x_root=1, y_root=1))
+            hud._on_release(self._ev(three_q, vy))
+            self.assertAlmostEqual(hud._vol_level, 0.75, delta=0.05)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_glyph_click_toggles_mute(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._vol_muted = False
+            gx, vy = hudmod.PAD, hud._vol_row_y
+            hud._on_press(self._ev(gx, vy, x_root=1, y_root=1))
+            self.assertTrue(hud._vol_press_glyph)
+            hud._moved = False
+            hud._on_release(self._ev(gx, vy))
+            self.assertTrue(hud._vol_muted)
+            self.assertEqual(self.mute_sets[-1], True)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_wheel_over_track_nudges_level(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._vol_level = 0.50; hud._vol_muted = False
+            v_left, v_right = hud._vol_bar_span
+            mid = (v_left + v_right) // 2
+            hud._on_wheel(self._ev(mid, hud._vol_row_y, delta=120))
+            self.assertAlmostEqual(hud._vol_level, 0.52, delta=0.001)
+            hud._on_wheel(self._ev(mid, hud._vol_row_y, delta=-120))
+            self.assertAlmostEqual(hud._vol_level, 0.50, delta=0.001)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_wheel_off_track_is_ignored(self):
+        root, hud = self._make_hud([])
+        try:
+            hud._vol_level = 0.50
+            hud._on_wheel(self._ev(5, 100000, delta=120))     # far below the row
+            self.assertAlmostEqual(hud._vol_level, 0.50)
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
