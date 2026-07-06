@@ -19,6 +19,7 @@ import winkit.metrics as metrics
 import winkit.media as media
 import winkit.nowplaying as nowplaying
 import winkit.diskinfo as diskinfo
+import winkit.audio as audio
 import config
 import webbrowser
 import timeago
@@ -67,6 +68,14 @@ MEDIA_FONT = ("Segoe UI Symbol", 14)
 MEDIA_PREV = "⏮"
 MEDIA_PLAY = "⏯"
 MEDIA_NEXT = "⏭"
+MEDIA_GAP = 54                     # spacing between transport glyphs
+MEDIA_HALF, MEDIA_VHALF = 20, 13   # transport tap-target half-extents
+AUDIO_FONT = ("Segoe MDL2 Assets", 12)   # monochrome icon font (recolours via fill)
+AUDIO_SPEAKER = ""           # MDL2 Volume glyph    -> HD-audio speakers
+AUDIO_HEADPHONE = ""         # MDL2 Headphone glyph -> ARCAM headphones
+AUDIO_GAP = 32                     # gap from 'next' to speaker (>MEDIA_HALF+AUDIO_HALF so hit-zones never touch)
+AUDIO_SP = 22                      # gap between the speaker and headphone icons
+AUDIO_HALF = 10                    # audio tap-target half-extent
 NP_TITLE_FONT = ("Consolas", 9)
 NP_TIME_FONT = ("Consolas", 8)   # elapsed / total M:SS labels flanking the bar
 NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
@@ -120,6 +129,23 @@ def _stock_points(series, x_left, x_right, top, bottom):
         y = mid if span <= 0 else bottom - (v - lo) / span * (bottom - top)
         pts.extend((x, y))
     return pts
+
+
+def media_layout(width, audio_on):
+    """x-centres for the transport controls (+ the audio output pair when
+    audio_on). With audio shown, the transport+audio group is group-centred so
+    both fit at the narrow 220px width; without audio the transport is plainly
+    centred (unchanged behaviour). Returns keys prev/play/next/speaker/headphone
+    (the audio keys are None when audio_on is False)."""
+    cx = width // 2
+    if not audio_on:
+        return {"prev": cx - MEDIA_GAP, "play": cx, "next": cx + MEDIA_GAP,
+                "speaker": None, "headphone": None}
+    extent = 2 * MEDIA_GAP + AUDIO_GAP + AUDIO_SP
+    prev = cx - extent // 2
+    nxt = prev + 2 * MEDIA_GAP
+    return {"prev": prev, "play": prev + MEDIA_GAP, "next": nxt,
+            "speaker": nxt + AUDIO_GAP, "headphone": nxt + AUDIO_GAP + AUDIO_SP}
 
 
 def edge_for(x, y, w, h, sw, sh, threshold):
@@ -265,18 +291,26 @@ class Hud:
         self._gpu_band = (PAD + 2 * ROW_H + 1, PAD + 3 * ROW_H - 1)
 
         ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media controls: row 5 (above the clock)
-        cx = self.width // 2
-        gap = 54                       # more breathing room between the transport glyphs
-        self._media_prev = c.create_text(cx - gap, ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
-        self._media_play = c.create_text(cx, ymedia, text=MEDIA_PLAY, fill=FG, font=MEDIA_FONT)
-        self._media_next = c.create_text(cx + gap, ymedia, text=MEDIA_NEXT, fill=FG, font=MEDIA_FONT)
-        half, vhalf = 20, 13           # roomier tap targets to match the larger glyphs
-        self._media_hits = [
-            (cx - gap - half, cx - gap + half, ymedia - vhalf, ymedia + vhalf, "prev"),
-            (cx - half,       cx + half,       ymedia - vhalf, ymedia + vhalf, "playpause"),
-            (cx + gap - half, cx + gap + half, ymedia - vhalf, ymedia + vhalf, "next"),
-        ]
+        self._ymedia = ymedia
+        self._resolve_audio()          # -> self._spk_id / _hp_id / _audio_on
+        lay = media_layout(self.width, self._audio_on)
+        self._media_prev = c.create_text(lay["prev"], ymedia, text=MEDIA_PREV, fill=FG, font=MEDIA_FONT)
+        self._media_play = c.create_text(lay["play"], ymedia, text=MEDIA_PLAY, fill=FG, font=MEDIA_FONT)
+        self._media_next = c.create_text(lay["next"], ymedia, text=MEDIA_NEXT, fill=FG, font=MEDIA_FONT)
         self._media_hover = None   # which media glyph is currently hover-highlighted
+        # Output-switch icons: speaker -> HD-audio, headphone -> ARCAM. Monochrome
+        # MDL2 glyphs so the active one can be tinted ACCENT. Hidden when the two
+        # configured devices don't both resolve (feature simply absent then).
+        st = "normal" if self._audio_on else "hidden"
+        self._audio_speaker = c.create_text(lay["speaker"] or 0, ymedia, text=AUDIO_SPEAKER,
+                                            fill=DIM, font=AUDIO_FONT, state=st)
+        self._audio_headphone = c.create_text(lay["headphone"] or 0, ymedia, text=AUDIO_HEADPHONE,
+                                              fill=DIM, font=AUDIO_FONT, state=st)
+        self._audio_hover = None
+        self._audio_active = None
+        self._audio_at_s = 0.0         # last default-endpoint poll (monotonic)
+        self._relayout_media_hits(lay)
+        self._refresh_audio_active()   # initial highlight
 
         # Now-playing band: reserved directly below the media row so the header
         # never jumps when playback starts/stops. Two rows: the title, then the
@@ -368,6 +402,10 @@ class Hud:
             if key is not None:
                 self._do_media(key)
                 return
+            slot = self._audio_at(event.x, event.y)        # speaker/headphone output switch
+            if slot is not None:
+                self._do_audio(slot)
+                return
             if self._np_seek_at(event.x, event.y):        # click on the progress bar -> seek
                 return
             action = self._action_at(event.x, event.y)   # tab/refresh/range/dismiss zones
@@ -436,6 +474,93 @@ class Hud:
         elif key == "next":
             media.next_track()
 
+    # --- audio output switch ---------------------------------------------
+    def _resolve_audio(self):
+        """Resolve the two configured output endpoints to live device ids. Sets
+        self._spk_id / _hp_id (or None) and self._audio_on (both present). Skips
+        all COM work when neither slot is configured (keeps default tests light)."""
+        acfg = (self.cfg.get("hud", {}) or {}).get("audio", {}) or {}
+        spk = acfg.get("speaker", {}) or {}
+        hp = acfg.get("headphone", {}) or {}
+        self._spk_id = self._hp_id = None
+        if not (spk.get("id") or spk.get("name") or hp.get("id") or hp.get("name")):
+            self._audio_on = False
+            return
+        try:
+            devs = audio.list_render_devices()
+        except Exception:
+            devs = []
+        self._spk_id = audio.match_device(devs, spk.get("id", ""), spk.get("name", ""))
+        self._hp_id = audio.match_device(devs, hp.get("id", ""), hp.get("name", ""))
+        self._audio_on = bool(self._spk_id and self._hp_id)
+
+    def _relayout_media_hits(self, lay):
+        """Rebuild the transport (+ audio) tap zones for the given layout."""
+        y, mh, mv = self._ymedia, MEDIA_HALF, MEDIA_VHALF
+        self._media_hits = [
+            (lay["prev"] - mh, lay["prev"] + mh, y - mv, y + mv, "prev"),
+            (lay["play"] - mh, lay["play"] + mh, y - mv, y + mv, "playpause"),
+            (lay["next"] - mh, lay["next"] + mh, y - mv, y + mv, "next"),
+        ]
+        self._audio_hits = []
+        if self._audio_on:
+            ah = AUDIO_HALF
+            self._audio_hits = [
+                (lay["speaker"] - ah, lay["speaker"] + ah, y - mv, y + mv, "speaker"),
+                (lay["headphone"] - ah, lay["headphone"] + ah, y - mv, y + mv, "headphone"),
+            ]
+
+    def _audio_at(self, x, y):
+        """Return 'speaker'/'headphone' if (x, y) hits an output icon, else None."""
+        for x0, x1, y0, y1, slot in self._audio_hits:
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return slot
+        return None
+
+    def _set_audio_hover(self, slot):
+        if slot == self._audio_hover:
+            return
+        self._audio_hover = slot
+        self._recolor_audio()
+
+    def _recolor_audio(self):
+        """Active output icon -> ACCENT; a hovered inactive one -> FG; else DIM."""
+        for slot, item in (("speaker", getattr(self, "_audio_speaker", None)),
+                           ("headphone", getattr(self, "_audio_headphone", None))):
+            if item is None:
+                continue
+            if slot == self._audio_active:
+                fill = ACCENT
+            elif slot == self._audio_hover:
+                fill = FG
+            else:
+                fill = DIM
+            try:
+                self.canvas.itemconfig(item, fill=fill)
+            except tk.TclError:
+                pass
+
+    def _do_audio(self, slot):
+        """Switch the default output device to the clicked slot's endpoint."""
+        dev = self._spk_id if slot == "speaker" else self._hp_id
+        if dev and audio.set_default_render(dev):
+            self._audio_active = slot
+            self._recolor_audio()
+
+    def _refresh_audio_active(self):
+        """Light the icon matching the OS default output -- reflects our own
+        switches and any change made elsewhere in Windows. No-op when off."""
+        if not self._audio_on:
+            return
+        try:
+            cur = audio.default_render_id()
+        except Exception:
+            return
+        new = audio.active_slot(cur, self._spk_id, self._hp_id)
+        if new != self._audio_active:
+            self._audio_active = new
+            self._recolor_audio()
+
     def _do_dismiss(self, action):
         """Optimistically apply a mark-read action to the rendered tile, then hand
         it to the worker. The worker's reconcile (success) or restore (failure)
@@ -500,6 +625,9 @@ class Hud:
         if now - self._disk_at >= 15:            # disk-free changes slowly; refresh ~15s
             self.disk = diskinfo.usage()
             self._disk_at = now
+        if now - self._audio_at_s >= 2:          # reflect default-output changes made elsewhere
+            self._refresh_audio_active()
+            self._audio_at_s = now
         self._reload_feeds_if_config_changed()   # live-pick-up of edited feeds/token
         self._draw()
         self._draw_nowplaying()
@@ -946,6 +1074,7 @@ class Hud:
         self._hover_xy = (event.x, event.y)
         self._apply_hover()
         self._set_media_hover(self._media_at(event.x, event.y))
+        self._set_audio_hover(self._audio_at(event.x, event.y))
         rec = self._scroll_line_at(event.x, event.y)
         if rec is not None:
             self._start_marquee(rec)
@@ -956,6 +1085,7 @@ class Hud:
         self._hover_xy = None
         self._apply_hover()
         self._set_media_hover(None)
+        self._set_audio_hover(None)
         self._stop_marquee()
 
     def _fit_px(self, text, x_start):
@@ -1433,16 +1563,14 @@ class Hud:
         c.coords(self._np_total, b_right + 5, self._np_row_y)
         self._np_bar_span = (b_left, b_right)
         ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media row 5 (above clock)
-        gap = 54                       # more breathing room between the transport glyphs
-        c.coords(self._media_prev, cx - gap, ymedia)
-        c.coords(self._media_play, cx, ymedia)
-        c.coords(self._media_next, cx + gap, ymedia)
-        half, vhalf = 20, 13           # roomier tap targets to match the larger glyphs
-        self._media_hits = [
-            (cx - gap - half, cx - gap + half, ymedia - vhalf, ymedia + vhalf, "prev"),
-            (cx - half,       cx + half,       ymedia - vhalf, ymedia + vhalf, "playpause"),
-            (cx + gap - half, cx + gap + half, ymedia - vhalf, ymedia + vhalf, "next"),
-        ]
+        lay = media_layout(self.width, self._audio_on)
+        c.coords(self._media_prev, lay["prev"], ymedia)
+        c.coords(self._media_play, lay["play"], ymedia)
+        c.coords(self._media_next, lay["next"], ymedia)
+        if self._audio_on:
+            c.coords(self._audio_speaker, lay["speaker"], ymedia)
+            c.coords(self._audio_headphone, lay["headphone"], ymedia)
+        self._relayout_media_hits(lay)
         y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, below the now-playing band
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)

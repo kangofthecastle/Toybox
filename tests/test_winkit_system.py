@@ -126,6 +126,31 @@ class TestAudioMeter(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "Windows only")
+class TestAudioEndpoints(unittest.TestCase):
+    """Read-only COM smoke for the output-endpoint enumeration path -- guards the
+    hand-rolled vtable slots (EnumAudioEndpoints/Item/GetId/GetDefaultAudioEndpoint)
+    against a wrong-slot regression. Non-mutating (never calls set_default_render)."""
+    def test_list_render_devices_shape(self):
+        import winkit.audio as A
+        devs = A.list_render_devices()
+        self.assertIsInstance(devs, list)
+        for entry in devs:
+            self.assertEqual(len(entry), 2)
+            did, name = entry
+            self.assertIsInstance(did, str)
+            self.assertIsInstance(name, str)
+
+    def test_default_is_among_listed_devices(self):
+        import winkit.audio as A
+        devs = A.list_render_devices()
+        if not devs:
+            self.skipTest("no active render devices on this machine")
+        cur = A.default_render_id()
+        self.assertIsInstance(cur, str)
+        self.assertIn(cur, [d[0] for d in devs])
+
+
+@unittest.skipUnless(os.name == "nt", "Windows only")
 class TestStartupRegistry(unittest.TestCase):
     NAME = "ToyboxTest__DELETEME"
 

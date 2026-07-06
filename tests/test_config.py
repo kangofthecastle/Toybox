@@ -168,6 +168,20 @@ class TestConfig(unittest.TestCase):
     def test_clipboard_layout_default(self):
         self.assertEqual(config.defaults()["clipboard"]["layout"], "columns")
 
+    def test_hud_audio_defaults_present(self):
+        audio = config.defaults()["hud"]["audio"]
+        for slot in ("speaker", "headphone"):
+            self.assertIn(slot, audio)
+            for key in ("id", "name"):
+                self.assertIn(key, audio[slot])
+                self.assertEqual(audio[slot][key], "")
+
+    def test_hud_audio_partial_config_merges_with_defaults(self):
+        self._write({"hud": {"audio": {"headphone": {"id": "X", "name": "ARCAM"}}}})
+        audio = config.load(self.path)["hud"]["audio"]
+        self.assertEqual(audio["headphone"], {"id": "X", "name": "ARCAM"})  # provided kept
+        self.assertEqual(audio["speaker"], {"id": "", "name": ""})          # other slot filled
+
     def test_clipboard_layout_roundtrip(self):
         cfg = config.defaults()
         cfg["clipboard"]["layout"] = "stacked"
