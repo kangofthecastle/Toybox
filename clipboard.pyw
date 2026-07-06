@@ -552,7 +552,7 @@ class ClipPanel:
         try:
             self.app.root.clipboard_clear()
             self.app.root.clipboard_append(text)
-            self.app.absorb_seq()
+            self.app.mark_local_copy(text)
         except tk.TclError:
             pass
         if self._pinned():
@@ -843,6 +843,16 @@ class ClipboardApp:
     # -- capture loop -----------------------------------------------------
     def absorb_seq(self):
         self._last_seq = wkinput.clipboard_sequence()
+
+    def mark_local_copy(self, text):
+        """A re-copy from the panel: broadcast it to LAN peers, THEN advance the
+        clipboard-sequence baseline so the capture poller swallows this write
+        (no duplicate history entry, no re-broadcast). Without this the poller --
+        the only broadcaster -- never sees the change, so panel copies would set
+        the local clipboard but never reach the Mac."""
+        if self.node is not None:
+            self.node.local_change(text)
+        self.absorb_seq()
 
     def _set_clipboard(self, text):
         try:

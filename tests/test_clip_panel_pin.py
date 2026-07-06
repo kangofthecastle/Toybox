@@ -40,6 +40,9 @@ class _FakeApp:
     def save_cfg(self):
         self.saved += 1
 
+    def mark_local_copy(self, text):
+        pass
+
     def absorb_seq(self):
         pass
 
