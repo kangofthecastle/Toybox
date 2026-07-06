@@ -18,6 +18,7 @@ import winkit.window as window
 import winkit.metrics as metrics
 import winkit.media as media
 import winkit.nowplaying as nowplaying
+import winkit.audiovolume as audiovolume
 import winkit.diskinfo as diskinfo
 import winkit.audio as audio
 import config
@@ -38,7 +39,12 @@ WIDTH = 220
 NOWPLAYING_H = 32      # reserved band under the media row: title + bar + time labels
 NP_BAR_H = 3           # progress-bar thickness (px)
 NP_TIME_W = 34         # inset each side of the bar for the M:SS elapsed/total labels
-HEIGHT = 156 + NOWPLAYING_H   # 6 header rows + reserved now-playing band + margin
+VOLUME_H = 24          # reserved band under the now-playing band: mute glyph + slider
+VOL_BAR_H = 4          # slider track thickness (px)
+VOL_KNOB_R = 6         # slider knob radius (px)
+VOL_GLYPH_W = 22       # left inset reserved for the mute/speaker glyph
+VOL_PCT_W = 34         # right inset reserved for the "100%" readout
+HEIGHT = 156 + NOWPLAYING_H + VOLUME_H   # header rows + now-playing + volume bands + margin
 WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
 ROW_H = 22
@@ -78,6 +84,9 @@ AUDIO_SP = 22                      # gap between the speaker and headphone icons
 AUDIO_HALF = 10                    # audio tap-target half-extent
 NP_TITLE_FONT = ("Consolas", 9)
 NP_TIME_FONT = ("Consolas", 8)   # elapsed / total M:SS labels flanking the bar
+VOL_GLYPH_FONT = ("Segoe UI Symbol", 12)
+VOL_LOUD = "\U0001F50A"    # speaker with sound waves
+VOL_MUTED = "\U0001F507"   # muted speaker
 NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
 NP_POLL_S = 2.5        # background SMTC read interval (seconds)
 
@@ -274,7 +283,7 @@ class Hud:
         y2 = PAD + ROW_H + ROW_H // 2
         ygpu = PAD + 2 * ROW_H + ROW_H // 2
         ydisk = PAD + 3 * ROW_H + ROW_H // 2     # disk row: row 4 (after GPU)
-        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, shifted below the now-playing band
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H + VOLUME_H   # clock + expand, below now-playing + volume bands
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
@@ -340,6 +349,29 @@ class Hud:
         self._np_seekable = False         # True only while a timeline is present (click-to-seek armed)
         self._np_bar_span = (b_left, b_right)   # last drawn bar span, for seek hit-testing
         self._np_duration = 0.0           # last drawn track duration (s), for seek target math
+
+        # Volume band: reserved directly below the now-playing band. A mute glyph,
+        # a draggable slider (track + fill + knob), and a right-aligned percent.
+        vy = (ymedia + ROW_H // 2) + NOWPLAYING_H + VOLUME_H // 2   # under the np band
+        self._vol_row_y = vy
+        v_left, v_right = self._vol_bar_bounds()
+        self._vol_bar_span = (v_left, v_right)
+        self._vol_glyph = c.create_text(PAD, vy, anchor="w", text=VOL_LOUD,
+                                        fill=FG, font=VOL_GLYPH_FONT)
+        self._vol_bar_bg = c.create_rectangle(v_left, vy - VOL_BAR_H // 2, v_right,
+                                              vy + VOL_BAR_H // 2, fill=NP_TRACK, outline="")
+        self._vol_bar = c.create_rectangle(v_left, vy - VOL_BAR_H // 2, v_left,
+                                           vy + VOL_BAR_H // 2, fill=ACCENT, outline="")
+        self._vol_knob = c.create_oval(v_left - VOL_KNOB_R, vy - VOL_KNOB_R,
+                                       v_left + VOL_KNOB_R, vy + VOL_KNOB_R,
+                                       fill=FG, outline="")
+        self._vol_pct = c.create_text(self.width - PAD, vy, anchor="e", text="",
+                                      fill=DIM, font=NP_TIME_FONT)
+        self._vol_level = None       # 0..1, or None until first read
+        self._vol_muted = False
+        self._vol_dragging = False
+        self._vol_press_glyph = False
+        self._vol_apply_at = 0.0     # monotonic time of last COM write (drag throttle)
 
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
@@ -631,6 +663,8 @@ class Hud:
         self._reload_feeds_if_config_changed()   # live-pick-up of edited feeds/token
         self._draw()
         self._draw_nowplaying()
+        self._refresh_volume()
+        self._draw_volume()
         self._tick_after = self.root.after(1000, self.tick)
 
     def _draw(self):
@@ -686,6 +720,43 @@ class Hud:
         """Horizontal span (x_left, x_right) of the progress bar, inset on both
         sides to leave room for the elapsed/total M:SS time labels."""
         return PAD + NP_TIME_W, self.width - PAD - NP_TIME_W
+
+    def _vol_bar_bounds(self):
+        """(x_left, x_right) of the slider track, inset for the glyph and percent."""
+        return PAD + VOL_GLYPH_W, self.width - PAD - VOL_PCT_W
+
+    def _refresh_volume(self):
+        """Pull the live system level/mute (main-thread; the call is fast). Skipped
+        while the user is dragging so the optimistic drag value is not clobbered."""
+        if self._vol_dragging:
+            return
+        v = audiovolume.get()
+        if v is not None:
+            self._vol_level, self._vol_muted = v
+
+    def _draw_volume(self):
+        """Render the slider fill, knob, mute glyph and percent from _vol_level /
+        _vol_muted. Muted greys the fill and swaps the glyph (the knob stays put so
+        unmuting restores the level). Blank until the first read. Never raises."""
+        c = self.canvas
+        vy = self._vol_row_y
+        v_left, v_right = self._vol_bar_span
+        try:
+            if self._vol_level is None:
+                c.itemconfig(self._vol_pct, text="")
+                c.coords(self._vol_bar, v_left, vy - VOL_BAR_H // 2, v_left,
+                         vy + VOL_BAR_H // 2)
+                return
+            frac = audiovolume.clamp01(self._vol_level)
+            kx = v_left + int((v_right - v_left) * frac)
+            c.coords(self._vol_bar, v_left, vy - VOL_BAR_H // 2, kx, vy + VOL_BAR_H // 2)
+            c.itemconfig(self._vol_bar, fill=(DIM if self._vol_muted else ACCENT))
+            c.coords(self._vol_knob, kx - VOL_KNOB_R, vy - VOL_KNOB_R,
+                     kx + VOL_KNOB_R, vy + VOL_KNOB_R)
+            c.itemconfig(self._vol_glyph, text=(VOL_MUTED if self._vol_muted else VOL_LOUD))
+            c.itemconfig(self._vol_pct, text=audiovolume.format_pct(frac))
+        except tk.TclError:
+            pass
 
     def _draw_nowplaying(self):
         """Update the title line, progress bar and elapsed/total time labels from
@@ -1201,7 +1272,7 @@ class Hud:
             c.delete(self._hover_item)
             self._hover_item = None
         self._hover_rect = None
-        y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H    # below the header rows + reserved now-playing band
+        y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H + VOLUME_H    # below header rows + now-playing + volume bands
         y = self._draw_schedule_tile(y)   # pinned "now" tile, above the tab bar
         for idx in self._weather_indices():   # weather: always shown, own tile (not tab-scoped)
             y = self._draw_tile(idx, self.manager.feeds[idx], y)
@@ -1547,6 +1618,7 @@ class Hud:
         self._relayout_header()
         self._draw()          # repaint header (clock/media/sparklines) at the new width
         self._draw_nowplaying()  # re-fill bar + reposition time labels at the new width
+        self._draw_volume()      # reposition slider fill/knob at the new width
         self._draw_feeds()    # reflow feeds + resize the window (via _resize)
 
     def _relayout_header(self):
@@ -1562,6 +1634,12 @@ class Hud:
         c.coords(self._np_elapsed, b_left - 5, self._np_row_y)
         c.coords(self._np_total, b_right + 5, self._np_row_y)
         self._np_bar_span = (b_left, b_right)
+        v_left, v_right = self._vol_bar_bounds()
+        self._vol_bar_span = (v_left, v_right)
+        c.coords(self._vol_glyph, PAD, self._vol_row_y)
+        c.coords(self._vol_bar_bg, v_left, self._vol_row_y - VOL_BAR_H // 2,
+                 v_right, self._vol_row_y + VOL_BAR_H // 2)
+        c.coords(self._vol_pct, self.width - PAD, self._vol_row_y)
         ymedia = PAD + 4 * ROW_H + ROW_H // 2    # media row 5 (above clock)
         lay = media_layout(self.width, self._audio_on)
         c.coords(self._media_prev, lay["prev"], ymedia)
@@ -1571,7 +1649,7 @@ class Hud:
             c.coords(self._audio_speaker, lay["speaker"], ymedia)
             c.coords(self._audio_headphone, lay["headphone"], ymedia)
         self._relayout_media_hits(lay)
-        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H   # clock + expand, below the now-playing band
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H + VOLUME_H   # clock + expand, below now-playing + volume bands
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
 

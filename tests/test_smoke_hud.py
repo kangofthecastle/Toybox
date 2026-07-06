@@ -2292,5 +2292,100 @@ class TestHudMediaHover(_HudTestBase):
             hud.close(); root.destroy()
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestHudVolume(_HudTestBase):
+    """Volume slider + mute. audiovolume is patched so NO test ever changes the
+    real device (set_level/set_mute are recorded; get() is deterministic)."""
+    def setUp(self):
+        super().setUp()
+        import winkit.audiovolume as av
+        self.vol_sets = []
+        self.mute_sets = []
+        for name, sink in (("set_level", self.vol_sets), ("set_mute", self.mute_sets)):
+            p = mock.patch.object(av, name, (lambda s: (lambda v: s.append(v) or True))(sink))
+            p.start(); self.addCleanup(p.stop)
+        gp = mock.patch.object(av, "get", lambda: (0.5, False))
+        gp.start(); self.addCleanup(gp.stop)
+
+    def test_items_exist(self):
+        root, hud = self._make_hud([])
+        try:
+            for item in (hud._vol_glyph, hud._vol_bar_bg, hud._vol_bar,
+                         hud._vol_knob, hud._vol_pct):
+                self.assertTrue(hud.canvas.coords(item) or
+                                hud.canvas.itemcget(item, "text") is not None)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_draw_positions_fill_knob_and_pct(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._vol_level = 0.5; hud._vol_muted = False
+            hud._draw_volume()
+            v_left, v_right = hud._vol_bar_span
+            x0, _y0, x1, _y1 = hud.canvas.coords(hud._vol_bar)
+            self.assertAlmostEqual(x1, v_left + (v_right - v_left) * 0.5, delta=2)
+            self.assertEqual(hud.canvas.itemcget(hud._vol_bar, "fill"), hudmod.ACCENT)
+            self.assertEqual(hud.canvas.itemcget(hud._vol_pct, "text"), "50%")
+        finally:
+            hud.close(); root.destroy()
+
+    def test_muted_greys_fill_and_swaps_glyph(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._vol_level = 0.7; hud._vol_muted = True
+            hud._draw_volume()
+            self.assertEqual(hud.canvas.itemcget(hud._vol_bar, "fill"), hudmod.DIM)
+            self.assertEqual(hud.canvas.itemcget(hud._vol_glyph, "text"), hudmod.VOL_MUTED)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_refresh_reads_from_audiovolume(self):
+        import winkit.audiovolume as av
+        root, hud = self._make_hud([])
+        try:
+            with mock.patch.object(av, "get", lambda: (0.8, True)):
+                hud._vol_level = None; hud._vol_muted = False
+                hud._refresh_volume()
+                self.assertAlmostEqual(hud._vol_level, 0.8)
+                self.assertTrue(hud._vol_muted)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_refresh_skipped_while_dragging(self):
+        import winkit.audiovolume as av
+        root, hud = self._make_hud([])
+        try:
+            with mock.patch.object(av, "get", lambda: (0.1, False)):
+                hud._vol_level = 0.9; hud._vol_dragging = True
+                hud._refresh_volume()
+                self.assertAlmostEqual(hud._vol_level, 0.9)   # drag value preserved
+        finally:
+            hud.close(); root.destroy()
+
+    def test_layout_below_nowplaying_above_clock_no_jump(self):
+        root, hud = self._make_hud([])
+        try:
+            np_y = hud.canvas.coords(hud._np_title)[1]
+            vol_y = hud._vol_row_y
+            clock_y = hud.canvas.coords(hud._clock_text)[1]
+            self.assertLess(np_y, vol_y)
+            self.assertLess(vol_y, clock_y)
+        finally:
+            hud.close(); root.destroy()
+
+    def test_recenters_on_width_toggle(self):
+        import hud as hudmod
+        root, hud = self._make_hud([])
+        try:
+            hud._toggle_width(); root.update_idletasks()
+            v_left, v_right = hud._vol_bar_span
+            self.assertEqual(v_right, hudmod.WIDTH_WIDE - hudmod.PAD - hudmod.VOL_PCT_W)
+        finally:
+            hud.close(); root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
