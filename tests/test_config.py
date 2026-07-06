@@ -301,6 +301,42 @@ class TestConfig(unittest.TestCase):
         merged = config.update(self.path, {"hud": {"x": 42}})
         self.assertEqual(merged["hud"]["x"], 42)
 
+    def test_update_preserves_unknown_keys_written_by_newer_code(self):
+        # A key this build's DEFAULTS doesn't know (a newer version's section, or a
+        # hand-added one) must SURVIVE a scoped update by a writer that doesn't
+        # recognize it -- else older code silently wipes newer config on its own save.
+        import json
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"hud": {"x": 5, "future": {"deep": "keep me"}},
+                       "brandnew": {"k": 1}}, f)
+        config.update(self.path, {"hud": {"x": 6}})       # writer touches only hud.x
+        with open(self.path, encoding="utf-8") as f:
+            raw = json.load(f)
+        self.assertEqual(raw["hud"]["x"], 6)                          # partial applied
+        self.assertEqual(raw["hud"]["future"], {"deep": "keep me"})  # unknown nested key kept
+        self.assertEqual(raw["brandnew"], {"k": 1})                  # unknown top-level kept
+
+    def test_stale_build_update_does_not_wipe_hud_audio(self):
+        # The reported regression: a toy whose DEFAULTS predate hud.audio must NOT
+        # strip hud.audio when it saves its OWN (clipboard) section.
+        import json, copy
+        cfg = config.defaults()
+        cfg["hud"]["audio"] = {"speaker": {"id": "SPK", "name": "Spk"},
+                               "headphone": {"id": "HP", "name": "Hp"}}
+        config.save(self.path, cfg)
+        orig = config.DEFAULTS
+        stale = copy.deepcopy(config.DEFAULTS)
+        del stale["hud"]["audio"]                          # simulate a pre-audio build
+        config.DEFAULTS = stale
+        try:
+            config.update(self.path, {"clipboard": {"max_items": 7}})
+        finally:
+            config.DEFAULTS = orig
+        with open(self.path, encoding="utf-8") as f:
+            raw = json.load(f)
+        self.assertEqual(raw["hud"]["audio"]["speaker"]["id"], "SPK")     # survived
+        self.assertEqual(raw["hud"]["audio"]["headphone"]["id"], "HP")
+
 
 if __name__ == "__main__":
     unittest.main()

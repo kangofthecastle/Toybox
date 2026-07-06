@@ -78,6 +78,20 @@ def _deep_merge(base, override):
     return result
 
 
+def _raw_merge(base, override):
+    """Deep-overlay override onto a copy of base, PRESERVING every base key --
+    including ones this build's DEFAULTS doesn't know. Unlike _deep_merge it never
+    drops unknown keys and never type-coerces, so a scoped writer can't strip a
+    config section another (newer or older) build wrote."""
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = _raw_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
 def load(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -119,7 +133,21 @@ def update(path, partial):
     the empty values it loaded at startup. `update` fixes that: each writer
     persists only the keys it owns (the HUD its window geometry, the settings
     window its feeds + token, clipboard/pet their own section), merging over the
-    latest on-disk state so the other keys survive untouched."""
-    merged = _deep_merge(load(path), partial)
-    save(path, merged)
-    return merged
+    latest on-disk state so the other keys survive untouched.
+
+    The overlay is applied to the RAW on-disk JSON (not the DEFAULTS-filtered
+    load()), so keys this build's DEFAULTS don't recognize -- e.g. a newer
+    version's hud.audio seen by older code -- are PRESERVED, never silently
+    dropped. That is what stops an out-of-date toy from wiping a config section it
+    doesn't know about on its next save. Returns the merged config, normalized
+    against DEFAULTS for the caller."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    raw = _raw_merge(data, partial)
+    save(path, raw)
+    return _deep_merge(DEFAULTS, raw)
