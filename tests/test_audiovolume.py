@@ -84,5 +84,43 @@ class TestStepLevel(unittest.TestCase):
         self.assertEqual(av.step_level(0.01, -0.05), 0.0)
 
 
+@unittest.skipUnless(os.name == "nt", "Windows only")
+class TestCoreAudioSmoke(unittest.TestCase):
+    def test_get_never_raises_and_is_well_shaped(self):
+        v = av.get()
+        if v is not None:
+            level, muted = v
+            self.assertIsInstance(level, float)
+            self.assertGreaterEqual(level, 0.0)
+            self.assertLessEqual(level, 1.0)
+            self.assertIsInstance(muted, bool)
+
+    def test_set_level_rejects_bad_input_without_touching_com(self):
+        self.assertIs(av.set_level(None), False)
+        self.assertIs(av.set_level("loud"), False)
+
+    def test_round_trip_restore_never_raises(self):
+        # Set level/mute back to their CURRENT values: exercises the real COM
+        # write path with ZERO net change to the user's system.
+        v = av.get()
+        if v is not None:
+            level, muted = v
+            self.assertIn(av.set_level(level), (True, False))
+            self.assertIn(av.set_mute(muted), (True, False))
+
+
+class TestToggleMuteLogic(unittest.TestCase):
+    def test_toggle_flips_current(self):
+        calls = []
+        with mock.patch.object(av, "get", lambda: (0.5, False)), \
+             mock.patch.object(av, "set_mute", lambda b: calls.append(b) or True):
+            self.assertEqual(av.toggle_mute(), True)   # False -> True
+            self.assertEqual(calls, [True])
+
+    def test_toggle_none_when_unreadable(self):
+        with mock.patch.object(av, "get", lambda: None):
+            self.assertIsNone(av.toggle_mute())
+
+
 if __name__ == "__main__":
     unittest.main()
