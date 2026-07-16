@@ -21,6 +21,11 @@ import winkit.nowplaying as nowplaying
 import winkit.audiovolume as audiovolume
 import winkit.diskinfo as diskinfo
 import winkit.audio as audio
+import winkit.monitors as monitors
+import winkit.input as wkinput
+import zonekit.geometry as zgeom
+import zonekit.overlay as zoverlay
+import zonekit.tracker as ztracker
 import config
 import webbrowser
 import timeago
@@ -44,7 +49,8 @@ VOL_BAR_H = 4          # slider track thickness (px)
 VOL_KNOB_R = 6         # slider knob radius (px)
 VOL_GLYPH_W = 22       # left inset reserved for the mute/speaker glyph
 VOL_PCT_W = 34         # right inset reserved for the "100%" readout
-HEIGHT = 156 + NOWPLAYING_H + VOLUME_H   # header rows + now-playing + volume bands + margin
+ZONES_H = 24           # reserved band under the volume band: monitor partition glyphs
+HEIGHT = 156 + NOWPLAYING_H + VOLUME_H + ZONES_H   # header rows + np + volume + zones bands + margin
 WIDTH_WIDE = 440       # the "expanded" fixed width (2x narrow; session-only toggle)
 PAD = 10
 ROW_H = 22
@@ -87,6 +93,13 @@ NP_TIME_FONT = ("Consolas", 8)   # elapsed / total M:SS labels flanking the bar
 VOL_GLYPH_FONT = ("Segoe UI Symbol", 12)
 VOL_LOUD = "\U0001F50A"    # speaker with sound waves
 VOL_MUTED = "\U0001F507"   # muted speaker
+ZONE_GLYPH_FONT = ("Segoe UI Symbol", 12)
+ZONE_GLYPHS = {"off": "▯", "v": "◫", "h": "⊟"}   # per-monitor partition state
+ZONE_GLYPH_SP = 26     # spacing between per-monitor partition glyphs
+ZONE_HALF = 11         # partition glyph tap-target half-extent
+ZONES_POLL_MS = 60     # Shift-drag watch sample interval (~16 Hz, like HotkeyPoller)
+ZONES_MON_S = 5.0      # monitor-list refresh interval (plug/unplug pickup)
+VK_LBUTTON = 0x01      # GetAsyncKeyState vk for the (physical) left mouse button
 NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
 NP_POLL_S = 2.5        # background SMTC read interval (seconds)
 
@@ -155,6 +168,36 @@ def media_layout(width, audio_on):
     nxt = prev + 2 * MEDIA_GAP
     return {"prev": prev, "play": prev + MEDIA_GAP, "next": nxt,
             "speaker": nxt + AUDIO_GAP, "headphone": nxt + AUDIO_GAP + AUDIO_SP}
+
+
+def zone_state_for(zones, device):
+    """(layout, ratio) for a monitor device from the hud.zones list. Unknown
+    devices and malformed entries read as ("off", 0.5); layout/ratio are
+    coerced so a hand-edited config can't crash the zones engine."""
+    for ent in zones or []:
+        if isinstance(ent, dict) and ent.get("device") == device:
+            layout = ent.get("layout")
+            if layout not in zgeom.LAYOUTS:
+                layout = "off"
+            return layout, zgeom.clamp_ratio(ent.get("ratio", 0.5))
+    return "off", 0.5
+
+
+def zones_with_state(zones, device, layout=None, ratio=None):
+    """A sanitized copy of the hud.zones list with `device`'s entry updated
+    (created if new); only the fields passed change. Non-dict entries drop."""
+    out = [dict(e) for e in (zones or []) if isinstance(e, dict)]
+    for ent in out:
+        if ent.get("device") == device:
+            break
+    else:
+        ent = {"device": device, "layout": "off", "ratio": 0.5}
+        out.append(ent)
+    if layout is not None:
+        ent["layout"] = layout
+    if ratio is not None:
+        ent["ratio"] = zgeom.clamp_ratio(ratio)
+    return out
 
 
 def edge_for(x, y, w, h, sw, sh, threshold):
@@ -283,7 +326,7 @@ class Hud:
         y2 = PAD + ROW_H + ROW_H // 2
         ygpu = PAD + 2 * ROW_H + ROW_H // 2
         ydisk = PAD + 3 * ROW_H + ROW_H // 2     # disk row: row 4 (after GPU)
-        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H + VOLUME_H   # clock + expand, below now-playing + volume bands
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H + VOLUME_H + ZONES_H   # clock + expand, below the np/volume/zones bands
         self._cpu_text = c.create_text(LABEL_X, y1, anchor="w", text="CPU   0%", fill=FG, font=FONT)
         self._ram_text = c.create_text(LABEL_X, y2, anchor="w", text="RAM   0%", fill=FG, font=FONT)
         self._gpu_text = c.create_text(LABEL_X, ygpu, anchor="w", text="GPU   0%", fill=FG, font=FONT)
@@ -373,6 +416,32 @@ class Hud:
         self._vol_press_glyph = False
         self._vol_apply_at = 0.0     # monotonic time of last COM write (drag throttle)
 
+        # Partitions (zones) band: one glyph per monitor under the volume band.
+        # Left-click cycles off/vertical/horizontal, right-click opens the
+        # divider editor. Snapped-window memory is session-only; the per-monitor
+        # layout+ratio persist in cfg["hud"]["zones"] (a list, like feeds).
+        zy = (ymedia + ROW_H // 2) + NOWPLAYING_H + VOLUME_H + ZONES_H // 2
+        self._zone_row_y = zy
+        self._zone_label = c.create_text(PAD, zy, anchor="w", text="SPLIT",
+                                         fill=DIM, font=NP_TIME_FONT)
+        self._zone_items = []      # [(canvas id, device)], parallel to hits
+        self._zone_hits = []       # (x0, x1, y0, y1, device) tap zones
+        self._zone_hover = None    # device currently hover-highlighted, or None
+        self._monitors = []        # cached winkit.monitors.list_monitors()
+        self._mon_at = 0.0         # last monitor refresh (monotonic)
+        self._zone_windows = {}    # hwnd -> (device, zone idx); session-only
+        self._zone_overlay = None  # SnapOverlay while a Shift-drag is live
+        self._zone_editor = None   # DividerEditor while editing a ratio
+        self._zones_after = None   # pending after() id of the zones tick
+        self._zone_tracker = ztracker.DragTracker(
+            shift_down=lambda: wkinput.key_down(wkinput.vk_for("shift")),
+            button_down=lambda: wkinput.key_down(VK_LBUTTON),
+            foreground=window.foreground_window,
+            rect_of=window.window_rect,
+            snappable=window.is_snappable,
+            cursor_pos=wkinput.cursor_pos)
+        self._refresh_monitors(force=True)
+
         # Dragging moves the whole window (it is borderless / overrideredirect).
         # Bind on the canvas ONLY -- it is packed fill=both/expand so it covers the
         # whole window, and a canvas's bindtags already include its toplevel. Binding
@@ -410,6 +479,7 @@ class Hud:
             self._start_nowplaying()
         self._tick_after = None
         self.tick()
+        self._zones_tick()
         self._drain_after = self.root.after(250, self._drain_feeds)
 
     # --- dragging ---------------------------------------------------------
@@ -458,6 +528,10 @@ class Hud:
             slot = self._audio_at(event.x, event.y)        # speaker/headphone output switch
             if slot is not None:
                 self._do_audio(slot)
+                return
+            dev = self._zone_glyph_at(event.x, event.y)    # partition glyph: cycle layout
+            if dev is not None:
+                self._cycle_zone_layout(dev)
                 return
             if self._np_seek_at(event.x, event.y):        # click on the progress bar -> seek
                 return
@@ -614,6 +688,218 @@ class Hud:
             self._audio_active = new
             self._recolor_audio()
 
+    # --- monitor partitions (zones) ----------------------------------------
+    def _refresh_monitors(self, force=False):
+        """Cache the monitor list, refreshing at most every ZONES_MON_S so
+        plug/unplug is picked up without an enumeration per 60ms sample."""
+        now = time.monotonic()
+        if not force and now - self._mon_at < ZONES_MON_S:
+            return
+        self._mon_at = now
+        try:
+            mons = monitors.list_monitors()
+        except Exception:
+            mons = []
+        changed = [m["device"] for m in mons] != [m["device"] for m in self._monitors]
+        self._monitors = mons
+        if changed:
+            self._draw_zone_glyphs()
+
+    def _monitor_by_device(self, device):
+        for m in self._monitors:
+            if m["device"] == device:
+                return m
+        return None
+
+    def _zone_state(self, device):
+        return zone_state_for(self.cfg["hud"].get("zones", []), device)
+
+    def _set_zone_state(self, device, layout=None, ratio=None):
+        self.cfg["hud"]["zones"] = zones_with_state(
+            self.cfg["hud"].get("zones", []), device, layout=layout, ratio=ratio)
+        try:
+            # Scoped write: the zones list is wholly HUD-owned, so replacing it
+            # is safe and everything else in config.json survives untouched.
+            config.update(CFG_PATH, {"hud": {"zones": self.cfg["hud"]["zones"]}})
+        except Exception:
+            pass
+        self._recolor_zone_glyphs()
+        self._resnap_zone_windows(device)
+
+    def _cycle_zone_layout(self, device):
+        layout, _ = self._zone_state(device)
+        self._set_zone_state(device, layout=zgeom.next_layout(layout))
+
+    def _any_zone_active(self):
+        return any(self._zone_state(m["device"])[0] != "off" for m in self._monitors)
+
+    def _draw_zone_glyphs(self):
+        """(Re)create the per-monitor partition glyphs, right-aligned in the
+        zones band (primary monitor leftmost). Rebuilds the tap zones."""
+        c = self.canvas
+        for item, _dev in self._zone_items:
+            c.delete(item)
+        self._zone_items = []
+        self._zone_hits = []
+        y = self._zone_row_y
+        x = self.width - PAD - ZONE_HALF
+        for m in reversed(self._monitors):
+            dev = m["device"]
+            item = c.create_text(x, y, anchor="center", text="", font=ZONE_GLYPH_FONT)
+            self._zone_items.append((item, dev))
+            self._zone_hits.append((x - ZONE_HALF, x + ZONE_HALF,
+                                    y - ZONE_HALF, y + ZONE_HALF, dev))
+            x -= ZONE_GLYPH_SP
+        self._recolor_zone_glyphs()
+
+    def _recolor_zone_glyphs(self):
+        """Glyph shows the layout; active layout -> ACCENT, hovered -> FG, else DIM."""
+        for item, dev in self._zone_items:
+            layout, _ = self._zone_state(dev)
+            if layout != "off":
+                fill = ACCENT
+            elif dev == self._zone_hover:
+                fill = FG
+            else:
+                fill = DIM
+            try:
+                self.canvas.itemconfig(item, text=ZONE_GLYPHS[layout], fill=fill)
+            except tk.TclError:
+                pass
+
+    def _zone_glyph_at(self, x, y):
+        """The device whose partition glyph is at (x, y), else None."""
+        for x0, x1, y0, y1, dev in self._zone_hits:
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return dev
+        return None
+
+    def _set_zone_hover(self, dev):
+        if dev == self._zone_hover:
+            return
+        self._zone_hover = dev
+        self._recolor_zone_glyphs()
+
+    def _zones_tick(self):
+        """~16 Hz Shift-drag watch (the zone-snap engine). Cheap when idle:
+        three GetAsyncKeyState reads gated behind _any_zone_active(). A sample
+        failure never kills the loop (HotkeyPoller pattern)."""
+        self._zones_after = None
+        try:
+            self._refresh_monitors()
+            if self._zone_editor is not None:
+                pass                          # ratio editing pauses the watch
+            elif self._any_zone_active():
+                event = self._zone_tracker.sample()
+                if event is not None:
+                    self._zone_event(event)
+            elif self._zone_overlay is not None:
+                self._hide_zone_overlay()
+        except Exception:
+            pass
+        finally:
+            self._zones_after = self.root.after(ZONES_POLL_MS, self._zones_tick)
+
+    def _zone_event(self, event):
+        kind = event[0]
+        if kind == "drag":
+            _, _hwnd, x, y = event
+            self._zone_drag_at(x, y)
+        elif kind == "drop":
+            _, hwnd, x, y = event
+            self._hide_zone_overlay()
+            self._zone_drop(hwnd, x, y)
+        else:  # cancel
+            self._hide_zone_overlay()
+
+    def _zone_drag_at(self, x, y):
+        """Show/refresh the snap overlay on the monitor under the cursor and
+        highlight the zone that a drop would fill."""
+        try:
+            m = monitors.monitor_at(x, y)
+        except Exception:
+            m = None
+        if m is None:
+            self._hide_zone_overlay()
+            return
+        layout, ratio = self._zone_state(m["device"])
+        if layout == "off":
+            self._hide_zone_overlay()
+            return
+        ov = self._zone_overlay
+        if ov is None or (ov.device, ov.layout, ov.ratio) != (m["device"], layout, ratio):
+            self._hide_zone_overlay()
+            try:
+                self._zone_overlay = zoverlay.SnapOverlay(self.root, m, layout, ratio)
+            except Exception:
+                self._zone_overlay = None
+                return
+        self._zone_overlay.highlight(zgeom.zone_at(m["work"], layout, ratio, x, y))
+
+    def _zone_drop(self, hwnd, x, y):
+        try:
+            m = monitors.monitor_at(x, y)
+        except Exception:
+            return
+        if m is None:
+            return
+        layout, ratio = self._zone_state(m["device"])
+        if layout == "off":
+            return
+        zone = zgeom.zone_at(m["work"], layout, ratio, x, y)
+        if zone is None:
+            return
+        rect = zgeom.zone_rects(m["work"], layout, ratio)[zone]
+        if window.move_window(hwnd, *rect):
+            self._zone_windows[hwnd] = (m["device"], zone)
+
+    def _resnap_zone_windows(self, device):
+        """Re-fit this session's snapped windows on `device` after a layout or
+        ratio change; prune entries whose window is gone or refuses to move."""
+        m = self._monitor_by_device(device)
+        layout, ratio = self._zone_state(device)
+        for hwnd, (dev, zone) in list(self._zone_windows.items()):
+            if dev != device:
+                continue
+            if m is None or layout == "off" or not window.is_window(hwnd):
+                self._zone_windows.pop(hwnd, None)
+                continue
+            rect = zgeom.zone_rects(m["work"], layout, ratio)[zone]
+            if not window.move_window(hwnd, *rect):
+                self._zone_windows.pop(hwnd, None)
+
+    def _hide_zone_overlay(self):
+        if self._zone_overlay is not None:
+            self._zone_overlay.destroy()
+            self._zone_overlay = None
+
+    def _open_zone_editor(self, device):
+        layout, ratio = self._zone_state(device)
+        m = self._monitor_by_device(device)
+        if m is None or layout == "off":
+            return                      # nothing to edit while the split is off
+        self._close_zone_editor()
+        self._hide_zone_overlay()
+        try:
+            self._zone_editor = zoverlay.DividerEditor(
+                self.root, m, layout, ratio,
+                on_commit=lambda r, d=device: self._zone_ratio_committed(d, r),
+                on_cancel=self._zone_editor_closed)
+        except Exception:
+            self._zone_editor = None
+
+    def _zone_ratio_committed(self, device, ratio):
+        self._zone_editor = None
+        self._set_zone_state(device, ratio=ratio)
+
+    def _zone_editor_closed(self):
+        self._zone_editor = None
+
+    def _close_zone_editor(self):
+        if self._zone_editor is not None:
+            self._zone_editor.destroy()
+            self._zone_editor = None
+
     def _do_dismiss(self, action):
         """Optimistically apply a mark-read action to the rendered tile, then hand
         it to the worker. The worker's reconcile (success) or restore (failure)
@@ -639,6 +925,10 @@ class Hud:
 
     # --- menu -------------------------------------------------------------
     def _on_menu(self, event):
+        dev = self._zone_glyph_at(event.x, event.y)
+        if dev is not None:                   # right-click a partition glyph:
+            self._open_zone_editor(dev)       # divider editor, not the menu
+            return
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -1214,6 +1504,7 @@ class Hud:
         self._apply_hover()
         self._set_media_hover(self._media_at(event.x, event.y))
         self._set_audio_hover(self._audio_at(event.x, event.y))
+        self._set_zone_hover(self._zone_glyph_at(event.x, event.y))
         rec = self._scroll_line_at(event.x, event.y)
         if rec is not None:
             self._start_marquee(rec)
@@ -1225,6 +1516,7 @@ class Hud:
         self._apply_hover()
         self._set_media_hover(None)
         self._set_audio_hover(None)
+        self._set_zone_hover(None)
         self._stop_marquee()
 
     def _fit_px(self, text, x_start):
@@ -1340,7 +1632,7 @@ class Hud:
             c.delete(self._hover_item)
             self._hover_item = None
         self._hover_rect = None
-        y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H + VOLUME_H    # below header rows + now-playing + volume bands
+        y = PAD + 6 * ROW_H + 4 + NOWPLAYING_H + VOLUME_H + ZONES_H    # below header rows + np/volume/zones bands
         y = self._draw_schedule_tile(y)   # pinned "now" tile, above the tab bar
         for idx in self._weather_indices():   # weather: always shown, own tile (not tab-scoped)
             y = self._draw_tile(idx, self.manager.feeds[idx], y)
@@ -1550,6 +1842,14 @@ class Hud:
             except Exception:
                 pass
             self._tick_after = None
+        if self._zones_after is not None:
+            try:
+                self.root.after_cancel(self._zones_after)
+            except Exception:
+                pass
+            self._zones_after = None
+        self._hide_zone_overlay()
+        self._close_zone_editor()
         if self._drain_after is not None:
             try:
                 self.root.after_cancel(self._drain_after)
@@ -1717,9 +2017,11 @@ class Hud:
             c.coords(self._audio_speaker, lay["speaker"], ymedia)
             c.coords(self._audio_headphone, lay["headphone"], ymedia)
         self._relayout_media_hits(lay)
-        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H + VOLUME_H   # clock + expand, below now-playing + volume bands
+        y3 = PAD + 5 * ROW_H + ROW_H // 2 + NOWPLAYING_H + VOLUME_H + ZONES_H   # clock + expand, below the np/volume/zones bands
         c.coords(self._expand_text, self.width - PAD, y3)
         self._expand_box = (self.width - PAD - ACTION_ZONE_W, y3 - 10, self.width, y3 + 10)
+        c.coords(self._zone_label, PAD, self._zone_row_y)
+        self._draw_zone_glyphs()      # glyphs are right-aligned: x depends on width
 
     def _set_active_tab(self, key):
         self.active_tab = feedmodel.coerce_tab(key)
