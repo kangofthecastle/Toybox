@@ -200,3 +200,124 @@ def window_title(hwnd):
     buf = ctypes.create_unicode_buffer(length + 1)
     got = _user32.GetWindowTextW(hwnd, buf, length + 1)
     return buf.value if got else ""
+
+
+# --- window snapping (zonekit) -------------------------------------------
+# Foreground lookup, DWM frame bounds, and positioning for zone snapping.
+
+import os as _os
+
+_user32.GetForegroundWindow.restype = wintypes.HWND
+_user32.GetForegroundWindow.argtypes = []
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetClassNameW.restype = ctypes.c_int
+_user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.IsWindow.restype = wintypes.BOOL
+_user32.IsWindow.argtypes = [wintypes.HWND]
+_user32.IsWindowVisible.restype = wintypes.BOOL
+_user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.IsZoomed.restype = wintypes.BOOL
+_user32.IsZoomed.argtypes = [wintypes.HWND]
+_user32.IsIconic.restype = wintypes.BOOL
+_user32.IsIconic.argtypes = [wintypes.HWND]
+_user32.ShowWindow.restype = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+
+_dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+_dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long  # HRESULT
+_dwmapi.DwmGetWindowAttribute.argtypes = [
+    wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+
+GWL_STYLE = -16
+WS_CAPTION = 0x00C00000
+WS_THICKFRAME = 0x00040000
+SW_RESTORE = 9
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+#: Shell/system window classes that must never be snapped into a zone.
+_UNSNAPPABLE_CLASSES = frozenset({
+    "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+    "#32768", "Windows.UI.Core.CoreWindow", "XamlExplorerHostIslandWindow",
+})
+
+
+def foreground_window():
+    """The current foreground window's hwnd as an int; 0 if none."""
+    return int(_user32.GetForegroundWindow() or 0)
+
+
+def is_window(hwnd):
+    return bool(hwnd) and bool(_user32.IsWindow(hwnd))
+
+
+def window_class(hwnd):
+    """The window's class name, or '' on failure."""
+    buf = ctypes.create_unicode_buffer(256)
+    got = _user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value if got else ""
+
+
+def window_rect(hwnd):
+    """(l, t, r, b) from GetWindowRect (includes invisible DWM borders), or None."""
+    rect = wintypes.RECT()
+    if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def frame_rect(hwnd):
+    """The *visible* frame (DWMWA_EXTENDED_FRAME_BOUNDS): what the user sees,
+    excluding the invisible resize borders. Falls back to window_rect."""
+    rect = wintypes.RECT()
+    hr = _dwmapi.DwmGetWindowAttribute(
+        hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect))
+    if hr != 0:
+        return window_rect(hwnd)
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def is_snappable(hwnd):
+    """True for a normal, visible, movable app window that zone snapping may
+    reposition: not ours, not a shell/tool window, not minimized, and with a
+    caption or sizing frame (excludes menus, tooltips, splash overlays)."""
+    if not is_window(hwnd) or not _user32.IsWindowVisible(hwnd):
+        return False
+    if _user32.IsIconic(hwnd):
+        return False
+    pid = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value == _os.getpid():
+        return False
+    if window_class(hwnd) in _UNSNAPPABLE_CLASSES:
+        return False
+    exstyle = int(_get(hwnd, GWL_EXSTYLE) or 0)
+    if exstyle & WS_EX_TOOLWINDOW:
+        return False
+    style = int(_get(hwnd, GWL_STYLE) or 0)
+    return bool(style & (WS_CAPTION | WS_THICKFRAME))
+
+
+def move_window(hwnd, left, top, right, bottom):
+    """Position a window so its *visible* frame fills (l, t, r, b): restores a
+    maximized/minimized window first, then compensates for the invisible DWM
+    borders (raw SetWindowPos leaves ~7 px gaps otherwise). Returns False on
+    any failure (e.g. an elevated target under UIPI); never raises."""
+    try:
+        if not is_window(hwnd):
+            return False
+        if _user32.IsZoomed(hwnd) or _user32.IsIconic(hwnd):
+            _user32.ShowWindow(hwnd, SW_RESTORE)
+        win = window_rect(hwnd)
+        vis = frame_rect(hwnd)
+        if win is None or vis is None:
+            return False
+        # Grow the target outward by each side's invisible inset.
+        x = left - (vis[0] - win[0])
+        y = top - (vis[1] - win[1])
+        w = (right - left) + (vis[0] - win[0]) + (win[2] - vis[2])
+        h = (bottom - top) + (vis[1] - win[1]) + (win[3] - vis[3])
+        return bool(_user32.SetWindowPos(
+            hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE))
+    except Exception:
+        return False

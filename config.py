@@ -9,7 +9,10 @@ DEFAULTS = {
     "hud": {"x": 40, "y": 40, "alpha": 0.85, "locked": False, "github_token": "",
             "schedule": {"path": ""},
             "audio": {"speaker": {"id": "", "name": ""},
-                      "headphone": {"id": "", "name": ""}}},
+                      "headphone": {"id": "", "name": ""}},
+            # Monitor partitions: [{"device", "layout" off|v|h, "ratio"}].
+            # A list (like feeds) because _deep_merge drops unknown dict keys.
+            "zones": []},
     "clipboard": {"max_items": 30, "hotkey": ["ctrl", "shift", "V"],
                   "x": None, "y": None, "capture": True, "layout": "columns",
                   "sync": False, "sync_passphrase": "", "persist_recent": True,

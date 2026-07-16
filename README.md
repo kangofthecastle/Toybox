@@ -34,6 +34,8 @@ To debug a toy and see errors, run it with the console build instead: `py hud.py
 
 **System Monitor HUD** — drag it anywhere (it remembers where). Right-click for opacity presets (100% / 85% / 60%) and Close. Position and opacity persist in `config.json`.
 
+**Monitor partitions (SPLIT row on the HUD)** — treat one monitor as two. Each attached monitor gets a glyph: click it to cycle **off → vertical (left/right) → horizontal (top/bottom)**. While a split is on, **just drag any window** — a translucent overlay shows the two zones; drop into one and the window snaps to fill it (DWM-border-exact). **Hold Shift while dragging to opt out** and place the window freely. **Right-click the glyph** to drag the divider anywhere (release to set, Esc cancels); windows you've snapped this session re-fit to the new ratio. Layout + ratio persist per monitor in `config.json`.
+
 **Clipboard History** — copy text as usual; it's captured automatically. Press **Ctrl+Shift+V** to open the picker: type to filter, ↑/↓ to move, **Enter** or double-click to re-copy the highlighted entry, **Esc** to dismiss. Holds the most recent 20 entries (configurable), in memory only — nothing is saved to disk, so copied passwords don't linger.
 
 **Music-Reactive Pet** — just play music or any audio. The pet grows and bounces with the loudness and reacts on beats (hops, wiggles, blinks); when it's quiet it idles and breathes. It's fully click-through, so it never gets in your way.
@@ -76,7 +78,8 @@ Either use the launcher's "Start … at login" menu items, or enable a toy direc
 
 ```
 hud.pyw  clipboard.pyw  pet.pyw  toybox.pyw   # the toys + launcher
-winkit/        # native helpers: window, metrics, input, audio, startup, tray
+winkit/        # native helpers: window, monitors, metrics, input, audio, startup, tray
+zonekit/       # monitor partitions: zone math, drag tracker, snap/divider overlays
 clip_history.py  beat_detector.py  sysmetrics.py  config.py   # pure logic
 tests/         # unit tests + real-system integration + smoke launches
 docs/superpowers/   # design spec, plan, and the native-code research notes
