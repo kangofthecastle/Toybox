@@ -97,7 +97,7 @@ ZONE_GLYPH_FONT = ("Segoe UI Symbol", 12)
 ZONE_GLYPHS = {"off": "▯", "v": "◫", "h": "⊟"}   # per-monitor partition state
 ZONE_GLYPH_SP = 26     # spacing between per-monitor partition glyphs
 ZONE_HALF = 11         # partition glyph tap-target half-extent
-ZONES_POLL_MS = 60     # Shift-drag watch sample interval (~16 Hz, like HotkeyPoller)
+ZONES_POLL_MS = 60     # window-drag watch sample interval (~16 Hz, like HotkeyPoller)
 ZONES_MON_S = 5.0      # monitor-list refresh interval (plug/unplug pickup)
 NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
 NP_POLL_S = 2.5        # background SMTC read interval (seconds)
@@ -433,7 +433,7 @@ class Hud:
         self._zone_editor = None   # DividerEditor while editing a ratio
         self._zones_after = None   # pending after() id of the zones tick
         self._zone_tracker = ztracker.DragTracker(
-            shift_down=lambda: wkinput.key_down(wkinput.vk_for("shift")),
+            suppress_down=lambda: wkinput.key_down(wkinput.vk_for("shift")),
             button_down=lambda: wkinput.key_down(wkinput.primary_button_vk()),
             foreground=window.foreground_window,
             rect_of=window.window_rect,
@@ -782,7 +782,8 @@ class Hud:
         self._recolor_zone_glyphs()
 
     def _zones_tick(self):
-        """~16 Hz Shift-drag watch (the zone-snap engine). Cheap when idle:
+        """~16 Hz window-drag watch (the zone-snap engine; Shift = opt-out).
+        Cheap when idle:
         three GetAsyncKeyState reads gated behind _any_zone_active(). A sample
         failure never kills the loop (HotkeyPoller pattern)."""
         self._zones_after = None

@@ -9,10 +9,14 @@
 - Each monitor has an independent partition state: `off | vertical | horizontal`,
   plus a split ratio (default 0.5, clamped to 0.15–0.85). Persisted in config,
   keyed by monitor device name (stable across reboots, unlike index).
-- **Snap:** while a normal window is being dragged with **Shift held**, a translucent
-  click-through overlay appears on the monitor under the cursor showing the two zones
-  of its active layout; the hovered zone highlights; releasing the mouse over a zone
+- **Snap:** while a normal window is being dragged, a translucent click-through
+  overlay appears on the monitor under the cursor showing the two zones of its
+  active layout; the hovered zone highlights; releasing the mouse over a zone
   moves the window to fill that zone. No layout active on that monitor → no overlay.
+  **Holding Shift while dragging opts out** (suppresses the overlay and the snap)
+  so a window can still be placed freely; releasing Shift mid-drag resumes.
+  (Amended 2026-07-16: originally Shift-to-activate; flipped to activate-on-drag
+  with Shift-to-suppress at the user's request.)
 - **Toggle:** the HUD gains a "partitions" row with one glyph per monitor
   (`▯` off / `◫` vertical / `⬓` horizontal). Left-click cycles off → vertical →
   horizontal. Right-click opens the divider editor.
