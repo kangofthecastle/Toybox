@@ -99,7 +99,6 @@ ZONE_GLYPH_SP = 26     # spacing between per-monitor partition glyphs
 ZONE_HALF = 11         # partition glyph tap-target half-extent
 ZONES_POLL_MS = 60     # Shift-drag watch sample interval (~16 Hz, like HotkeyPoller)
 ZONES_MON_S = 5.0      # monitor-list refresh interval (plug/unplug pickup)
-VK_LBUTTON = 0x01      # GetAsyncKeyState vk for the (physical) left mouse button
 NP_TRACK = "#2b2b34"   # progress-bar track (unfilled) colour
 NP_POLL_S = 2.5        # background SMTC read interval (seconds)
 
@@ -435,7 +434,7 @@ class Hud:
         self._zones_after = None   # pending after() id of the zones tick
         self._zone_tracker = ztracker.DragTracker(
             shift_down=lambda: wkinput.key_down(wkinput.vk_for("shift")),
-            button_down=lambda: wkinput.key_down(VK_LBUTTON),
+            button_down=lambda: wkinput.key_down(wkinput.primary_button_vk()),
             foreground=window.foreground_window,
             rect_of=window.window_rect,
             snappable=window.is_snappable,
@@ -699,7 +698,9 @@ class Hud:
         try:
             mons = monitors.list_monitors()
         except Exception:
-            mons = []
+            return   # transient enumeration failure: keep the last-known list
+        if not mons:
+            return   # ditto -- never wipe the glyphs on a degenerate read
         changed = [m["device"] for m in mons] != [m["device"] for m in self._monitors]
         self._monitors = mons
         if changed:
@@ -788,13 +789,15 @@ class Hud:
         try:
             self._refresh_monitors()
             if self._zone_editor is not None:
-                pass                          # ratio editing pauses the watch
-            elif self._any_zone_active():
-                event = self._zone_tracker.sample()
+                self._zone_tracker.reset()    # ratio editing pauses the watch;
+            elif self._any_zone_active():     # a paused DRAGGING must not
+                event = self._zone_tracker.sample()   # replay as a stale drop
                 if event is not None:
                     self._zone_event(event)
-            elif self._zone_overlay is not None:
-                self._hide_zone_overlay()
+            else:
+                self._zone_tracker.reset()
+                if self._zone_overlay is not None:
+                    self._hide_zone_overlay()
         except Exception:
             pass
         finally:
@@ -874,10 +877,13 @@ class Hud:
             self._zone_overlay = None
 
     def _open_zone_editor(self, device):
+        """Open the divider editor for `device`. Returns True if it opened, so
+        _on_menu can fall through to the normal context menu when it can't
+        (split off / monitor gone) instead of swallowing the right-click."""
         layout, ratio = self._zone_state(device)
         m = self._monitor_by_device(device)
         if m is None or layout == "off":
-            return                      # nothing to edit while the split is off
+            return False                # nothing to edit while the split is off
         self._close_zone_editor()
         self._hide_zone_overlay()
         try:
@@ -887,6 +893,8 @@ class Hud:
                 on_cancel=self._zone_editor_closed)
         except Exception:
             self._zone_editor = None
+            return False
+        return True
 
     def _zone_ratio_committed(self, device, ratio):
         self._zone_editor = None
@@ -926,9 +934,9 @@ class Hud:
     # --- menu -------------------------------------------------------------
     def _on_menu(self, event):
         dev = self._zone_glyph_at(event.x, event.y)
-        if dev is not None:                   # right-click a partition glyph:
-            self._open_zone_editor(dev)       # divider editor, not the menu
-            return
+        if dev is not None and self._open_zone_editor(dev):
+            return          # right-click an ACTIVE partition glyph: divider
+        # editor instead of the menu; an off glyph falls through to the menu
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:

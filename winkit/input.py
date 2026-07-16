@@ -36,6 +36,20 @@ def key_down(vk):
     return bool(_user32.GetAsyncKeyState(vk) & 0x8000)
 
 
+_user32.GetSystemMetrics.restype = ctypes.c_int
+_user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+
+SM_SWAPBUTTON = 23
+VK_LBUTTON, VK_RBUTTON = 0x01, 0x02
+
+
+def primary_button_vk():
+    """VK of the primary ('drag') mouse button. GetAsyncKeyState reports
+    PHYSICAL buttons, so a swapped (left-handed) mouse drags with the physical
+    right button; read SM_SWAPBUTTON each call so a live swap is honored."""
+    return VK_RBUTTON if _user32.GetSystemMetrics(SM_SWAPBUTTON) else VK_LBUTTON
+
+
 def clipboard_sequence():
     """Monotonic clipboard sequence number; changes whenever the clipboard is written."""
     return int(_user32.GetClipboardSequenceNumber())

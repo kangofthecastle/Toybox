@@ -134,6 +134,24 @@ class NeverArms(unittest.TestCase):
         self.assertEqual(rig.tracker.state, ARMED)  # armed but never DRAGGING
 
 
+class Reset(unittest.TestCase):
+    def test_reset_mid_drag_suppresses_stale_drop(self):
+        # The HUD resets the tracker whenever the watch pauses (editor open,
+        # all layouts off): a DRAGGING state frozen across the pause must not
+        # replay as a drop at the stale hwnd once sampling resumes.
+        rig = Rig()
+        rig.window(101, (0, 0, 400, 300))
+        rig.shift = rig.button = True
+        rig.tracker.sample()
+        rig.move_window(101, 50, 0)
+        rig.tracker.sample()
+        self.assertEqual(rig.tracker.state, DRAGGING)
+        rig.tracker.reset()                    # pause
+        rig.shift = rig.button = False         # user finished while paused
+        self.assertIsNone(rig.tracker.sample())  # resume: no bogus drop
+        self.assertEqual(rig.tracker.state, IDLE)
+
+
 class Rearm(unittest.TestCase):
     def test_foreground_change_while_armed_rearms(self):
         rig = Rig()

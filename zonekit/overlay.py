@@ -31,17 +31,21 @@ class _Overlay:
         self.work = work
         left, top, right, bottom = work
         self.top = tk.Toplevel(root)
-        self.top.withdraw()               # style before first show: no flash
-        self.top.overrideredirect(True)
-        self.top.attributes("-topmost", True)
-        self.top.attributes("-alpha", alpha)
-        self.top.geometry(f"{right - left}x{bottom - top}+{left}+{top}")
-        self.canvas = tk.Canvas(self.top, bg=BG, highlightthickness=0, bd=0)
-        self.canvas.pack(fill="both", expand=True)
-        self.top.update()                 # realize the HWND before ex-styles
-        window.apply_overlay_styles(
-            self.top, clickthrough=clickthrough, no_activate=no_activate)
-        self.top.deiconify()
+        try:
+            self.top.withdraw()           # style before first show: no flash
+            self.top.overrideredirect(True)
+            self.top.attributes("-topmost", True)
+            self.top.attributes("-alpha", alpha)
+            self.top.geometry(f"{right - left}x{bottom - top}+{left}+{top}")
+            self.canvas = tk.Canvas(self.top, bg=BG, highlightthickness=0, bd=0)
+            self.canvas.pack(fill="both", expand=True)
+            self.top.update()             # realize the HWND before ex-styles
+            window.apply_overlay_styles(
+                self.top, clickthrough=clickthrough, no_activate=no_activate)
+            self.top.deiconify()
+        except Exception:
+            self.destroy()                # never leak a screen-covering toplevel
+            raise
 
     def _local(self, rect):
         """Screen rect -> canvas-local rect (the canvas origin is work's l, t)."""
