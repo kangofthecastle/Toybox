@@ -36,6 +36,7 @@ import petkit.reminders as reminders
 import petkit.nudges as nudges
 import petkit.pins as pins
 import petkit.settings as settings
+import petkit.rotate as rotate
 import winkit.dnd as dnd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +154,7 @@ class Cat:
         self._tick_after = None
         self._next_topmost = 0.0          # low-rate cat top-most re-assert cursor
         self.settings = None              # lazily-built Settings window (singleton)
+        self.rotate_panel = None          # lazily-built Rotate-display panel (singleton)
         self._apply_pin_enabled()         # release pins if the feature is off
         self._apply_carry_enabled()       # install the drop target iff enabled
 
@@ -309,6 +311,7 @@ class Cat:
             m.add_command(label="■ Stop focus", command=self._stop_focus)
         m.add_command(label="⏰ Reminders…",
                       command=lambda: self._open_settings("Reminders"))
+        m.add_command(label="⟳ Rotate display…", command=self._open_rotate)
         if pet.get("pin", True):
             target = window.window_below(self.hwnd)
             pinned = bool(target) and self.pinset.is_pinned(target)
@@ -330,6 +333,13 @@ class Cat:
         if self.settings is None:
             self.settings = settings.SettingsWindow(self)
         self.settings.open(tab)
+
+    def _open_rotate(self):
+        """Open the stay-open Rotate-display panel (targets the monitor the cat
+        is on). Singleton, like the Settings window."""
+        if self.rotate_panel is None:
+            self.rotate_panel = rotate.RotatePanel(self)
+        self.rotate_panel.open()
 
     def _on_right_click(self, event):
         m = self._build_menu(time.monotonic())
@@ -605,6 +615,11 @@ class Cat:
         try:
             if getattr(self, "settings", None):
                 self.settings.close()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "rotate_panel", None):
+                self.rotate_panel.close()
         except Exception:
             pass
         try:
